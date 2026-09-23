@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Theme tokens (RGB channels so Tailwind can apply opacity).
+  Palette: bottle green primary, cool paper, ink.
+  Amber is reserved for "needs your action" only.
+*/
+:root,
+[data-theme="light"] {
+  --bg: 246 247 249;          /* #F6F7F9 cool paper */
+  --surface: 255 255 255;
+  --sunken: 239 241 244;
+  --line: 223 227 233;
+  --ink: 22 32 46;            /* #16202E */
+  --muted: 88 99 115;
+  --faint: 140 150 164;
+  --shadow: 22 32 46;
+
+  --primary: 0 106 78;        /* #006A4E */
+  --primary-hover: 0 88 64;
+  --primary-fg: 255 255 255;
+  --primary-soft: 226 242 236;
+
+  --danger: 190 18 60;
+  --danger-soft: 255 228 232;
+
+  /* Who acts next */
+  --g-brand: 166 77 6;        --g-brand-bg: 254 240 204;   /* amber: you */
+  --g-kbb: 91 58 186;         --g-kbb-bg: 237 233 254;     /* violet: KBB acts */
+  --g-v360: 44 72 160;        --g-v360-bg: 226 233 252;    /* indigo: V360 acts */
+  --g-transit: 3 105 150;     --g-transit-bg: 222 242 252; /* sky: moving */
+  --g-done: 0 106 78;         --g-done-bg: 226 242 236;    /* green: delivered */
+  --g-problem: 190 18 60;     --g-problem-bg: 255 228 232; /* brick: problem */
+  --g-closed: 100 110 125;    --g-closed-bg: 236 238 242;  /* grey: cancelled */
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: 15 20 28;             /* blue-slate, not pure black */
+  --surface: 22 29 39;
+  --sunken: 29 37 49;
+  --line: 44 55 70;
+  --ink: 229 234 240;
+  --muted: 156 167 182;
+  --faint: 110 121 137;
+  --shadow: 0 0 0;
+
+  --primary: 58 180 140;
+  --primary-hover: 84 199 160;
+  --primary-fg: 6 30 22;
+  --primary-soft: 18 52 42;
+
+  --danger: 251 113 133;
+  --danger-soft: 64 22 32;
+
+  --g-brand: 251 191 36;      --g-brand-bg: 66 44 8;
+  --g-kbb: 180 160 255;       --g-kbb-bg: 42 34 78;
+  --g-v360: 147 170 255;      --g-v360-bg: 30 40 80;
+  --g-transit: 110 200 245;   --g-transit-bg: 14 50 70;
+  --g-done: 88 204 160;       --g-done-bg: 16 54 42;
+  --g-problem: 251 113 133;   --g-problem-bg: 70 22 34;
+  --g-closed: 150 160 175;    --g-closed-bg: 38 46 58;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+    font-feature-settings: "tnum" 1, "cv11" 1;
+  }
+  h1 { @apply text-[22px] font-semibold tracking-[-0.01em] leading-tight; }
+  h2 { @apply text-[15px] font-semibold; }
+  :focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; border-radius: 4px; }
+  ::selection { background: rgb(var(--primary) / 0.2); }
+  dialog::backdrop { background: rgb(var(--shadow) / 0.45); }
+}
+
+@layer components {
+  .panel { @apply bg-surface border border-line rounded-lg; }
+  .field-label { @apply block text-[13px] font-medium text-ink mb-1.5; }
+  .input {
+    @apply w-full h-9 rounded border border-line bg-surface px-3 text-[14px] text-ink placeholder:text-faint
+           transition-colors hover:border-faint focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20
+           disabled:opacity-60 disabled:cursor-not-allowed;
+  }
+  .input[aria-invalid="true"] { @apply border-danger focus:ring-danger/20; }
+  textarea.input { @apply h-auto py-2 min-h-[84px] resize-y; }
+  .table-head th { @apply text-left text-[12.5px] font-medium text-muted px-3 py-2 border-b border-line bg-sunken/60 whitespace-nowrap; }
+  .table-body td { @apply px-3 py-2.5 border-b border-line align-middle; }
+  .table-body tr:last-child td { @apply border-b-0; }
+  .link { @apply text-primary hover:underline underline-offset-2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

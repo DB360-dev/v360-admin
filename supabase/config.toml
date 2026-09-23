@@ -1,0 +1,15 @@
+# Only the per-function settings this project relies on.
+# Shopify calls these two directly, without a Supabase login token.
+[functions.shopify-webhook]
+verify_jwt = false
+
+[functions.shopify-callback]
+verify_jwt = false
+
+# Called from the Brand Portal by a signed-in user.
+[functions.shopify-install]
+verify_jwt = true
+
+# Called from the Admin panel by a signed-in V360 admin.
+[functions.manage-user]
+verify_jwt = true
