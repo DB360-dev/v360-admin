@@ -3,7 +3,7 @@ import { Printer } from "lucide-react";
 import { useBrandOptions, useCreateSettlement, useMarkSettlementPaid, useMoneySettings, useRecordKbbPayment, useSettlements, useShipments } from "@/hooks/useData";
 import { describeError } from "@/lib/errors";
 import { fmtDate, fmtDateTime, fmtMoney } from "@/lib/format";
-import type { KbbShipmentAccount, Settlement } from "@/lib/types";
+import type { KbbOrderAccount } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { TextField } from "@/components/ui/Field";
@@ -184,7 +184,7 @@ export function StatementDialog({ settlementId, open, onClose }: {
 // ---------------------------------------------------------------- record payment
 
 export function RecordPaymentDialog({ open, onClose, account }: {
-  open: boolean; onClose: () => void; account: KbbShipmentAccount[];
+  open: boolean; onClose: () => void; account: KbbOrderAccount[];
 }) {
   const record = useRecordKbbPayment({ inlineErrors: true });
   const shipments = useShipments("all");
@@ -213,8 +213,10 @@ export function RecordPaymentDialog({ open, onClose, account }: {
   }, [open]);
 
   const dispatched = (shipments.data ?? []).filter((s) => s.status !== "draft" && s.status !== "ready_for_dispatch");
-  const row = account.find((a) => a.shipment_id === shipmentId);
-  const remaining = row ? Number(row.net_balance) : null;
+  const rowsForShipment = (account ?? []).filter((a) => a.shipment_id === shipmentId);
+  const row = rowsForShipment.find((a) => a.net_balance !== 0) ?? rowsForShipment[0];
+  const outstanding = rowsForShipment.reduce((n, a) => n + Number(a.net_balance), 0);
+  const remaining = rowsForShipment.length ? outstanding : null;
 
   const submit = () => {
     const n = Number(amount);
@@ -263,9 +265,9 @@ export function RecordPaymentDialog({ open, onClose, account }: {
               <option value="">Choose a shipment…</option>
               {dispatched.map((s) => <option key={s.id} value={s.id}>{s.code}</option>)}
             </select>
-            {row && (
+            {rowsForShipment.length > 0 && (
               <p className="mt-1.5 text-[12.5px] text-muted">
-                Outstanding on {row.shipment_code}: <strong>{fmtMoney(row.net_balance, "PKR")}</strong>
+                Outstanding on {row?.shipment_code}: <strong>{fmtMoney(outstanding, "PKR")}</strong>
                 {remaining !== null && remaining > 0 && amount && (
                   <> · after this payment: {fmtMoney(remaining - Number(amount || 0) * (currency === "PKR" ? 1 : 0), "PKR")}</>
                 )}

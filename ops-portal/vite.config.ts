@@ -9,9 +9,13 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ["react", "react-dom", "react-router-dom"],
-          data: ["@supabase/supabase-js", "@tanstack/react-query"],
+        manualChunks(id) {
+          if (id.includes("node_modules/react") || id.includes("node_modules/react-dom") || id.includes("node_modules/react-router-dom")) {
+            return "react";
+          }
+          if (id.includes("node_modules/@supabase") || id.includes("node_modules/@tanstack")) {
+            return "data";
+          }
         },
       },
     },

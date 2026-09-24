@@ -9,6 +9,7 @@ import { queryClient } from "@/lib/queryClient";
 import { ThemeProvider, useTheme } from "@/context/ThemeContext";
 import { AuthProvider } from "@/context/AuthContext";
 import { OpsProvider } from "@/context/OpsContext";
+import { NotificationProvider } from "@/context/NotificationContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ConfigError } from "@/components/ConfigError";
 import { router } from "./App";
@@ -28,8 +29,10 @@ createRoot(document.getElementById("root")!).render(
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
               <OpsProvider>
-                <RouterProvider router={router} />
-                <ThemedToaster />
+                <NotificationProvider>
+                  <RouterProvider router={router} />
+                  <ThemedToaster />
+                </NotificationProvider>
               </OpsProvider>
             </AuthProvider>
           </QueryClientProvider>

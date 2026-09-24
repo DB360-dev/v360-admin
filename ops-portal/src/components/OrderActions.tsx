@@ -26,7 +26,7 @@ const VERB: Partial<Record<OrderStatus, string>> = {
 };
 const PRIMARY: OrderStatus[] = ["confirmed", "out_for_delivery", "ready_for_shipment"];
 const DANGER: OrderStatus[] = ["cancelled", "delivery_failed", "returned"];
-const EDITABLE: OrderStatus[] = ["new", "confirmation_pending", "customer_unreachable", "needs_amendment", "confirmed", "brand_preparing"];
+const EDITABLE: OrderStatus[] = ["new", "confirmation_pending", "customer_unreachable", "needs_amendment", "brand_confirmed", "confirmed", "brand_preparing"];
 
 type Dlg =
   | { kind: "status"; to: OrderStatus }

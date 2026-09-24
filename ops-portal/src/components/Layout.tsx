@@ -13,6 +13,8 @@ import { useOnline } from "@/hooks/useOnline";
 import { CONFIRM_QUEUE, DELIVERY_QUEUE } from "@/lib/status";
 import { ROLE_LABEL } from "@/lib/status";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { NotificationBanner } from "./NotificationBanner";
+import { NotificationToggle, NotificationPanel } from "./NotificationArea";
 
 type Badge = "confirm" | "deliver" | "hub";
 interface NavItem { to: string; label: string; icon: LucideIcon; end?: boolean; roles: OpsRole[]; badge?: Badge; section?: string }
@@ -110,30 +112,53 @@ export function Layout() {
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[240px_1fr] print:block">
-      <aside className="sticky top-0 hidden h-screen border-r border-line bg-surface lg:block print:!hidden"><Sidebar /></aside>
-      <div className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-surface px-4 py-2.5 lg:hidden print:hidden">
-        <button onClick={() => setOpen(true)} className="rounded p-1.5 hover:bg-sunken" aria-label="Open menu"><Menu className="h-5 w-5" /></button>
-        <span className="font-semibold">{role === "kbb" ? "KBB Fulfilment" : "V360 Operations"}</span>
-      </div>
+      {/* Sidebar Column 1 */}
+      <aside className="sticky top-0 hidden h-screen border-r border-line bg-surface lg:block print:!hidden">
+        <Sidebar />
+      </aside>
+
+      {/* Mobile Drawer */}
       {open && (
         <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Menu">
           <div className="absolute inset-0 bg-[rgb(var(--shadow)/0.45)]" onClick={() => setOpen(false)} />
           <div className="absolute inset-y-0 left-0 w-72 border-r border-line bg-surface shadow-pop">
-            <button onClick={() => setOpen(false)} className="absolute right-2 top-3 rounded p-1.5 hover:bg-sunken" aria-label="Close menu"><X className="h-4 w-4" /></button>
+            <button onClick={() => setOpen(false)} className="absolute right-2 top-3 rounded p-1.5 hover:bg-sunken" aria-label="Close menu">
+              <X className="h-4 w-4" />
+            </button>
             <Sidebar onNavigate={() => setOpen(false)} />
           </div>
         </div>
       )}
-      <main className="min-w-0">
-        {!online && (
-          <div role="status" className="flex items-center gap-2 bg-g-problem-bg px-6 py-2 text-[13.5px] text-g-problem">
-            <WifiOff className="h-4 w-4" aria-hidden /> You're offline. Changes won't save until your connection is back.
+
+      {/* Content Column 2 */}
+      <div className="flex min-w-0 flex-col min-h-screen">
+        {/* Top Header */}
+        <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-surface/90 px-4 py-2.5 sm:px-6 sm:py-3 backdrop-blur-md print:!hidden">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={() => setOpen(true)} className="rounded p-1.5 hover:bg-sunken lg:hidden" aria-label="Open menu">
+              <Menu className="h-5 w-5" />
+            </button>
+            <h2 className="truncate text-[15px] font-semibold text-ink">{role === "kbb" ? "KBB Fulfilment" : "V360 Operations"}</h2>
           </div>
-        )}
-        <div className="mx-auto max-w-[1320px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-          <ErrorBoundary key={location.pathname}><Outlet /></ErrorBoundary>
-        </div>
-      </main>
+          <div className="relative flex items-center gap-3">
+            <NotificationToggle />
+            <NotificationPanel />
+          </div>
+        </header>
+
+        {/* Main Section */}
+        <main className="flex-1 min-w-0">
+          {!online && (
+            <div role="status" className="flex items-center gap-2 bg-g-problem-bg px-6 py-2 text-[13.5px] text-g-problem">
+              <WifiOff className="h-4 w-4" aria-hidden /> You're offline. Changes won't save until your connection is back.
+            </div>
+          )}
+          <div className="mx-auto max-w-[1320px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+            <NotificationBanner />
+            <ErrorBoundary key={location.pathname}><Outlet /></ErrorBoundary>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

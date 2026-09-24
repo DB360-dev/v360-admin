@@ -1,5 +1,5 @@
 export type OrderStatus =
-  | "new" | "confirmation_pending" | "customer_unreachable" | "needs_amendment" | "confirmed" | "cancelled"
+  | "new" | "confirmation_pending" | "customer_unreachable" | "needs_amendment" | "brand_confirmed" | "confirmed" | "cancelled"
   | "brand_preparing" | "dispatched_to_hub" | "received_at_hub" | "hub_issue" | "ready_for_shipment"
   | "assigned_to_shipment" | "shipped" | "in_transit" | "customs" | "arrived_bd" | "received_by_partner"
   | "preparing_for_delivery" | "out_for_delivery" | "delivered" | "delivery_failed" | "returned" | "hold";
@@ -81,6 +81,7 @@ export interface OrderOverview {
   cod_currency: string | null; confirmation_attempts: number; inbound_courier: string | null; inbound_tracking: string | null;
   shipment_code: string | null; shipment_tracking: string | null; shipping_partner: string | null;
   delivery_courier: string | null; delivery_tracking_number: string | null; delivered_at: string | null; item_count: number;
+  skus: string | null;
   shipment_id: string | null; inbound_batch_id: string | null;
 }
 
@@ -136,6 +137,14 @@ export interface MoneySettings {
   invoice_company_name?: string | null;
 }
 
+export interface BrandMoneySettings {
+  brand_id: string;
+  kbb_commission_pct: number;
+  v360_commission_pct: number;
+  freight_bdt_per_kg: number;
+  invoice_company_name: string | null;
+}
+
 export interface BrandPayable {
   brand_id: string;
   brand_name: string;
@@ -180,11 +189,14 @@ export interface Settlement {
   settlement_lines?: SettlementLine[];
 }
 
-export interface KbbShipmentAccount {
+export interface KbbOrderAccount {
+  order_id: string;
+  order_number: string;
   shipment_id: string;
   shipment_code: string;
   shipment_status: ShipmentStatus;
-  dispatched_at: string | null;
+  order_date: string;
+  order_value_pkr: number;
   advance_owed: number;
   advance_paid: number;
   delivery_owed: number;

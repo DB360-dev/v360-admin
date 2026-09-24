@@ -184,26 +184,31 @@ function AccountTab({ canRecord }: { canRecord: boolean }) {
     <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <p className="text-[13.5px] text-muted">
-          Per-shipment advances owed, delivery payments, and credits. Positive net = still to pay.
+          Per-order advances owed, delivery payments, and credits. Positive net = KBB still to pay.
         </p>
         {canRecord && <Button variant="primary" onClick={() => setRecording(true)}><Wallet className="h-4 w-4" /> Record payment</Button>}
       </div>
 
       <div className="panel mb-6 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-[13.5px]">
+          <table className="w-full min-w-[920px] text-[13.5px]">
             <thead className="table-head"><tr>
-              <th>Shipment</th><th>Left hub</th>
+              <th>Order</th><th>Ordered</th>
+              <th className="text-right">Order value</th>
               <th className="text-right">Advance owed</th><th className="text-right">Advance paid</th>
               <th className="text-right">Delivery owed</th><th className="text-right">Delivery paid</th>
               <th className="text-right">Credits</th><th className="text-right">Net balance</th>
             </tr></thead>
-            {q.isLoading ? <SkeletonRows cols={8} rows={4} /> : (
+            {q.isLoading ? <SkeletonRows cols={9} rows={4} /> : (
               <tbody className="table-body">
                 {rows.map((r) => (
-                  <tr key={r.shipment_id}>
-                    <td className="font-medium">{r.shipment_code}</td>
-                    <td className="text-muted">{fmtDateTime(r.dispatched_at)}</td>
+                  <tr key={r.order_id}>
+                    <td>
+                      <span className="font-medium">{r.order_number}</span>
+                      <span className="ml-1.5 text-[12px] text-muted">{r.shipment_code}</span>
+                    </td>
+                    <td className="text-muted">{fmtDateTime(r.order_date)}</td>
+                    <td className="text-right text-muted">{fmtMoney(r.order_value_pkr, "PKR")}</td>
                     <td className="text-right">{fmtMoney(r.advance_owed, "PKR")}</td>
                     <td className="text-right">{fmtMoney(r.advance_paid, "PKR")}</td>
                     <td className="text-right">{fmtMoney(r.delivery_owed, "PKR")}</td>
@@ -220,14 +225,14 @@ function AccountTab({ canRecord }: { canRecord: boolean }) {
         </div>
         {q.isError && <ErrorState error={q.error} onRetry={() => q.refetch()} />}
         {!q.isLoading && !q.isError && rows.length === 0 && (
-          <EmptyState icon={<Banknote className="h-6 w-6" />} title="No dispatched shipments yet">
-            Balances appear once a shipment leaves the hub.
+          <EmptyState icon={<Banknote className="h-6 w-6" />} title="No dispatched orders yet">
+            Balances appear once an order leaves the hub.
           </EmptyState>
         )}
         {!q.isLoading && rows.length > 0 && (
           <div className="flex justify-end border-t border-line px-4 py-2.5 text-[13.5px]">
             Total outstanding: <strong className="ml-1.5">{fmtMoney(totalNet, "PKR")}</strong>
-            {outstanding.length > 0 && <span className="ml-2 text-muted">({outstanding.length} shipment{outstanding.length === 1 ? "" : "s"})</span>}
+            {outstanding.length > 0 && <span className="ml-2 text-muted">({outstanding.length} order{outstanding.length === 1 ? "" : "s"})</span>}
           </div>
         )}
       </div>

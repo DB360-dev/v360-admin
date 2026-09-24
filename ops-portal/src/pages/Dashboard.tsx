@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { CheckCircle2 } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
 import { useAgeing, useDashboardCounts, useRecentActivity, useStatusCounts } from "@/hooks/useData";
-import { CONFIRM_QUEUE, DELIVERY_QUEUE, ORDER_VIEWS, STATUS } from "@/lib/status";
+import { CONFIRM_QUEUE, DELIVERY_QUEUE, GROUP_CLASSES, ORDER_VIEWS, STATUS } from "@/lib/status";
 import { fmtDateTime, since } from "@/lib/format";
 import type { OrderStatus } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -59,7 +59,7 @@ function Activity() {
               <Link to={`/orders/${e.order_id}`} className="block px-4 py-2.5 hover:bg-sunken/60">
                 <div className="text-[13.5px]">
                   <span className="font-medium">{e.order?.order_number}</span>{" "}
-                  <span className="text-muted">{e.action === "Status changed" && e.to_status ? STATUS[e.to_status].label : e.action}</span>
+                  <span className="text-muted">{e.action === "Status changed" && e.to_status ? STATUS[e.to_status]?.label ?? e.to_status : e.action}</span>
                 </div>
                 <div className="text-[12.5px] text-faint">{e.actor_label ?? "System"}, {fmtDateTime(e.created_at)}</div>
               </Link>
@@ -99,6 +99,7 @@ export function Dashboard() {
   }
 
   const views = ORDER_VIEWS.filter((v) => v.key !== "all" && v.key !== "cancelled");
+  const allStatuses = Object.keys(STATUS) as OrderStatus[];
   return (
     <>
       <PageHeader title="Dashboard" description="Every brand's Bangladesh orders, live." />
@@ -106,6 +107,19 @@ export function Dashboard() {
         {views.map((v) => (
           <Tile key={v.key} label={v.label} value={sum(v.statuses)} to={`/orders?view=${v.key}`} tone={v.key === "problem" ? "problem" : undefined} />
         ))}
+      </div>
+      <h2 className="mb-3 mt-7">Orders by status</h2>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+        {allStatuses.map((s) => {
+          const n = c ? (c[s] ?? 0) : undefined;
+          return (
+            <Link key={s} to={`/orders?view=${s}`} className="flex items-center gap-2 rounded border border-line px-2.5 py-2 hover:border-faint">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${GROUP_CLASSES[STATUS[s].group].dot}`} aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-[13px]">{STATUS[s].label}</span>
+              <span className={`text-[14px] font-semibold ${n === undefined ? "text-faint" : n > 0 ? "text-ink" : "text-faint"}`}>{n ?? "–"}</span>
+            </Link>
+          );
+        })}
       </div>
       <h2 className="mb-3 mt-7">Your queues</h2>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Check, PackagePlus } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, Check, PackagePlus, Scale } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
+import { supabase } from "@/lib/supabase";
 import {
   useAddToShipment, useOrderList, useRemoveFromShipment, useSetShipmentBrandWeight, useShipment,
-  useShipmentBrandWeights, useShipmentEvents, useShipmentStatus, useUpdateShipment,
+  useShipmentBrandWeights, useShipmentCalculatedWeight, useShipmentEvents, useShipmentStatus, useUpdateShipment,
 } from "@/hooks/useData";
 import { SHIPMENT_FLOW, SHIPMENT_STATUS, nextShipmentStatus } from "@/lib/status";
 import { describeError } from "@/lib/errors";
@@ -36,23 +38,67 @@ function Stepper({ status }: { status: ShipmentOverview["status"] }) {
 
 function DetailsForm({ s, editable }: { s: ShipmentOverview; editable: boolean }) {
   const m = useUpdateShipment();
+  const calcWeight = useShipmentCalculatedWeight(s.id);
+  const calculatedTotal = calcWeight.data ?? 0;
+
   const [v, setV] = useState({ shipping_partner: "", tracking_number: "", total_weight_kg: "", notes: "" });
-  const reset = () => setV({ shipping_partner: s.shipping_partner ?? "", tracking_number: s.tracking_number ?? "",
-    total_weight_kg: s.total_weight_kg === null ? "" : String(s.total_weight_kg), notes: s.notes ?? "" });
-  useEffect(reset, [s.id, s.shipping_partner, s.tracking_number, s.total_weight_kg, s.notes]); // eslint-disable-line
+
+  const reset = () => {
+    const defaultWeight = s.total_weight_kg !== null && s.total_weight_kg !== undefined
+      ? String(s.total_weight_kg)
+      : calculatedTotal > 0
+      ? String(calculatedTotal)
+      : "";
+    setV({
+      shipping_partner: s.shipping_partner ?? "",
+      tracking_number: s.tracking_number ?? "",
+      total_weight_kg: defaultWeight,
+      notes: s.notes ?? "",
+    });
+  };
+
+  useEffect(reset, [s.id, s.shipping_partner, s.tracking_number, s.total_weight_kg, s.notes, calculatedTotal]);
+
   const dirty = v.shipping_partner !== (s.shipping_partner ?? "") || v.tracking_number !== (s.tracking_number ?? "")
     || v.total_weight_kg !== (s.total_weight_kg === null ? "" : String(s.total_weight_kg)) || v.notes !== (s.notes ?? "");
   const weightErr = v.total_weight_kg.trim() && (Number.isNaN(Number(v.total_weight_kg)) || Number(v.total_weight_kg) < 0) ? "Enter a weight in kg" : null;
 
   if (!editable) {
-    return <Facts rows={[["Carrier", s.shipping_partner], ["Tracking", s.tracking_number], ["Weight", s.total_weight_kg ? `${s.total_weight_kg} kg` : null],
+    const displayWeight = s.total_weight_kg ?? (calculatedTotal > 0 ? calculatedTotal : null);
+    return <Facts rows={[["Carrier", s.shipping_partner], ["Tracking", s.tracking_number], ["Weight", displayWeight ? `${displayWeight} kg` : null],
       ["Route", `${s.origin} to ${s.destination}`], ["Notes", s.notes]]} />;
   }
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (!weightErr) m.mutate({ id: s.id, ...v }); }} className="grid gap-4 sm:grid-cols-2">
       <TextField label="Shipping partner" value={v.shipping_partner} onChange={(e) => setV({ ...v, shipping_partner: e.target.value })} />
       <TextField label="Tracking ID" value={v.tracking_number} onChange={(e) => setV({ ...v, tracking_number: e.target.value })} hint="One ID for the whole shipment" />
-      <TextField label="Total weight (kg)" inputMode="decimal" value={v.total_weight_kg} onChange={(e) => setV({ ...v, total_weight_kg: e.target.value })} error={weightErr} optional />
+      <div>
+        <TextField
+          label="Total weight (kg)"
+          inputMode="decimal"
+          value={v.total_weight_kg}
+          placeholder={calculatedTotal > 0 ? `${calculatedTotal} (calculated)` : undefined}
+          onChange={(e) => setV({ ...v, total_weight_kg: e.target.value })}
+          error={weightErr}
+          optional
+        />
+        {calculatedTotal > 0 && (
+          <div className="mt-1 flex items-center justify-between text-[12px] text-muted">
+            <span className="flex items-center gap-1">
+              <Scale className="h-3 w-3 text-primary" /> Product sum: <strong className="text-ink">{calculatedTotal} kg</strong>
+            </span>
+            {v.total_weight_kg !== String(calculatedTotal) && (
+              <button
+                type="button"
+                onClick={() => setV({ ...v, total_weight_kg: String(calculatedTotal) })}
+                className="font-medium text-primary hover:underline"
+              >
+                Use calculated
+              </button>
+            )}
+          </div>
+        )}
+      </div>
       <div className="text-[13.5px]"><span className="field-label">Route</span><p className="pt-2 text-muted">{s.origin} to {s.destination}</p></div>
       <div className="sm:col-span-2"><TextArea label="Notes" optional rows={2} value={v.notes} onChange={(e) => setV({ ...v, notes: e.target.value })} /></div>
       <div className="flex gap-2 sm:col-span-2">
@@ -127,7 +173,7 @@ function FreightSection({ shipment, editable }: { shipment: ShipmentOverview; ed
             <li key={b.id} className="flex flex-wrap items-end gap-2">
               <div className="min-w-0 flex-1">
                 <TextField
-                  label={brands.length > 6 ? b.name : undefined}
+                  label={brands.length > 6 ? b.name : ""}
                   value={raw}
                   inputMode="decimal"
                   placeholder={brands.length > 6 ? undefined : b.name}
@@ -154,24 +200,66 @@ function FreightSection({ shipment, editable }: { shipment: ShipmentOverview; ed
   );
 }
 
+type ReadyOrder = {
+  id: string; order_number: string; customer_name: string | null; city: string | null;
+  cod_amount_expected: number | null; cod_currency: string | null;
+  brand: { id: string; name: string } | null;
+  order_items: { sku: string | null; product_name: string; quantity: number }[];
+  order_freight_weights: { weight_kg: number }[];
+};
+
+const fmtKg = (w: number | undefined | null) => (w === null || w === undefined || Number.isNaN(w) ? "—" : `${Number(w.toFixed(2))} kg`);
+
 function AddOrdersDialog({ shipment, open, onClose }: { shipment: ShipmentOverview; open: boolean; onClose: () => void }) {
-  const q = useOrderList({ statuses: ["ready_for_shipment"], limit: 500, oldestFirst: true });
+  const q = useQuery({
+    queryKey: ["ops", "ready-orders", open],
+    enabled: open,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("id, order_number, customer_name, city, cod_amount_expected, cod_currency, brand:organizations(id, name), order_items(sku, product_name, quantity), order_freight_weights(weight_kg)")
+        .eq("status", "ready_for_shipment")
+        .order("order_number");
+      if (error) throw error;
+      const normalizeBrand = (b: unknown): ReadyOrder["brand"] =>
+        Array.isArray(b) ? (b[0] as ReadyOrder["brand"]) ?? null : (b as ReadyOrder["brand"]);
+      return ((data ?? []) as unknown as ReadyOrder[]).map((r) => ({ ...r, brand: normalizeBrand(r.brand) }));
+    },
+  });
   const add = useAddToShipment({ inlineErrors: true });
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [brand, setBrand] = useState("");
   useEffect(() => { if (open) { add.reset(); setSel(new Set()); setBrand(""); } }, [open]); // eslint-disable-line
-  const rows = q.data?.rows ?? [];
-  const brands = [...new Set(rows.map((r) => r.brand_name))].sort();
-  const shown = rows.filter((r) => !brand || r.brand_name === brand);
+  const rows = q.data ?? [];
+  const brands = [...new Set(rows.map((r) => r.brand?.name ?? "Unknown brand"))].sort();
+  const grouped = useMemo(() => {
+    const m = new Map<string, ReadyOrder[]>();
+    for (const r of rows) {
+      const n = r.brand?.name ?? "Unknown brand";
+      const g = m.get(n);
+      if (g) g.push(r); else m.set(n, [r]);
+    }
+    return [...m.entries()].map(([name, orders]) => ({
+      name,
+      orders,
+      weight: orders.reduce((s, o) => s + (o.order_freight_weights?.[0]?.weight_kg ?? 0), 0),
+    }));
+  }, [rows]);
+  const groups = grouped.filter((g) => !brand || g.name === brand);
+  const shown = groups.flatMap((g) => g.orders);
   const all = shown.length > 0 && shown.every((r) => sel.has(r.id));
   const toggle = (id: string) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const selWeight = rows.filter((r) => sel.has(r.id)).reduce((s, r) => s + (r.order_freight_weights?.[0]?.weight_kg ?? 0), 0);
+  const skuList = (o: ReadyOrder) => o.order_items.map((i) => `${i.quantity}× ${i.sku ?? i.product_name}`).join(", ");
 
   return (
     <Dialog open={open} onClose={onClose} width="lg" busy={add.isPending} error={add.error ? describeError(add.error) : null}
       title={`Add orders to ${shipment.code}`} description="Only complete orders (every item received at the hub) can be added."
       onSubmit={() => sel.size && add.mutate({ shipmentId: shipment.id, orderIds: [...sel] }, { onSuccess: onClose })}
       footer={<><Button onClick={onClose} disabled={add.isPending}>Cancel</Button>
-        <Button type="submit" variant="primary" disabled={!sel.size} loading={add.isPending}>Add {sel.size ? plural(sel.size, "order") : "orders"}</Button></>}>
+        <Button type="submit" variant="primary" disabled={!sel.size} loading={add.isPending}>
+          Add {sel.size ? plural(sel.size, "order") : "orders"}{sel.size > 0 ? ` · ${fmtKg(selWeight)}` : ""}
+        </Button></>}>
       {q.isLoading ? <Spinner /> : q.isError ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : rows.length === 0 ? (
         <EmptyState title="No orders are ready">Orders appear here once every item has been received at the hub.</EmptyState>
       ) : (
@@ -184,20 +272,35 @@ function AddOrdersDialog({ shipment, open, onClose }: { shipment: ShipmentOvervi
               {brands.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
           </div>
-          <ul className="divide-y divide-line rounded border border-line">
-            {shown.map((r) => (
-              <li key={r.id}>
-                <label className="flex cursor-pointer items-center gap-3 px-3 py-2 text-[13.5px] hover:bg-sunken/50">
-                  <Checkbox checked={sel.has(r.id)} onChange={() => toggle(r.id)} />
-                  <span className="w-20 font-semibold">{r.order_number}</span>
-                  <span className="w-32 truncate">{r.brand_name}</span>
-                  <span className="flex-1 truncate text-muted">{r.customer_name}, {r.city}</span>
-                  <span className="text-muted">{r.item_count} items</span>
-                  <span className="w-24 text-right">{fmtMoney(r.cod_amount_expected, r.cod_currency)}</span>
-                </label>
-              </li>
+          <div className="max-h-[60vh] space-y-4 overflow-y-auto">
+            {groups.map((g) => (
+              <div key={g.name}>
+                <div className="flex items-baseline gap-2 border-b border-line pb-1 text-[13px]">
+                  <span className="font-semibold">{g.name}</span>
+                  <span className="text-faint">{plural(g.orders.length, "order")}{g.weight > 0 ? ` · ${fmtKg(g.weight)} total` : ""}</span>
+                </div>
+                <ul className="divide-y divide-line">
+                  {g.orders.map((r) => {
+                    const w = r.order_freight_weights?.[0]?.weight_kg;
+                    return (
+                      <li key={r.id}>
+                        <label className="flex cursor-pointer items-center gap-3 px-3 py-2 text-[13.5px] hover:bg-sunken/50">
+                          <Checkbox checked={sel.has(r.id)} onChange={() => toggle(r.id)} />
+                          <span className="w-20 shrink-0 font-semibold">{r.order_number}</span>
+                          <span className="hidden max-w-[200px] truncate text-muted md:block" title={skuList(r)}>{skuList(r)}</span>
+                          <span className="ml-auto flex items-center gap-3">
+                            <span className="hidden w-20 truncate text-muted sm:block">{r.customer_name}, {r.city}</span>
+                            <span className="w-16 text-right">{fmtKg(w)}</span>
+                            <span className="w-24 text-right">{fmtMoney(r.cod_amount_expected, r.cod_currency)}</span>
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
         </>
       )}
     </Dialog>

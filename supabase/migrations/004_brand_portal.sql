@@ -33,12 +33,12 @@ begin
   end loop;
 
   select string_agg(order_number || ' ("' || status || '")', ', ') into v_bad
-  from orders where id = any(p_order_ids) and status not in ('confirmed', 'brand_preparing');
+  from orders where id = any(p_order_ids) and status not in ('confirmed', 'brand_confirmed', 'brand_preparing');
   if v_bad is not null then
     raise exception 'Only confirmed orders can be marked as preparing. Not eligible: %', v_bad;
   end if;
 
-  for o in select id from orders where id = any(p_order_ids) and status = 'confirmed' loop
+  for o in select id from orders where id = any(p_order_ids) and status in ('confirmed', 'brand_confirmed') loop
     perform _set_order_status(o.id, 'brand_preparing', 'Marked as preparing');
     v_count := v_count + 1;
   end loop;

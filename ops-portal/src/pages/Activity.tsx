@@ -22,7 +22,7 @@ export function Activity() {
                     <td className="whitespace-nowrap text-muted">{fmtDateTime(e.created_at)}</td>
                     <td className="font-medium">{e.actor_label ?? "System"}</td>
                     <td><Link to={`/orders/${e.order_id}`} className="font-semibold hover:underline">{e.order?.order_number}</Link></td>
-                    <td>{e.action === "Status changed" && e.to_status ? `Moved to ${STATUS[e.to_status].label}` : e.action}</td>
+                    <td>{e.action === "Status changed" && e.to_status ? `Moved to ${STATUS[e.to_status]?.label ?? e.to_status}` : e.action}</td>
                     <td className="max-w-[320px] truncate text-muted" title={e.note ?? undefined}>{e.note ?? ""}</td>
                   </tr>
                 ))}

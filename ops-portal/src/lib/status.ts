@@ -8,6 +8,7 @@ export const STATUS: Record<OrderStatus, { label: string; group: StatusGroup }> 
   confirmation_pending:   { label: "Confirmation pending", group: "kbb" },
   customer_unreachable:   { label: "Customer unreachable", group: "kbb" },
   needs_amendment:        { label: "Needs amendment", group: "brand" },
+  brand_confirmed:        { label: "Brand confirmed", group: "brand" },
   confirmed:              { label: "Confirmed", group: "brand" },
   cancelled:              { label: "Cancelled", group: "closed" },
   brand_preparing:        { label: "Brand preparing", group: "brand" },
@@ -56,7 +57,7 @@ export const NOTE_REQUIRED: OrderStatus[] = ["cancelled", "delivery_failed", "ne
 export const ORDER_VIEWS: { key: string; label: string; statuses: OrderStatus[] | null }[] = [
   { key: "all", label: "All", statuses: null },
   { key: "kbb", label: "Confirming", statuses: CONFIRM_QUEUE },
-  { key: "brand", label: "With brand", statuses: ["needs_amendment", "confirmed", "brand_preparing"] },
+  { key: "brand", label: "With brand", statuses: ["needs_amendment", "confirmed", "brand_confirmed", "brand_preparing"] },
   { key: "hub", label: "Hub", statuses: ["dispatched_to_hub", "received_at_hub", "hub_issue", "ready_for_shipment", "assigned_to_shipment"] },
   { key: "transit", label: "In transit", statuses: ["shipped", "in_transit", "customs", "arrived_bd"] },
   { key: "lastmile", label: "Last mile", statuses: ["received_by_partner", "preparing_for_delivery", "out_for_delivery"] },
@@ -65,9 +66,35 @@ export const ORDER_VIEWS: { key: string; label: string; statuses: OrderStatus[] 
   { key: "cancelled", label: "Cancelled", statuses: ["cancelled"] },
 ];
 
+/** Full status tracks for the order-screen tracking bar, per organisation.
+ * Every step is shown (done, current, upcoming) so the whole journey is visible. */
+export interface TrackStep { status: OrderStatus; label: string }
+
+export const V360_STATUS_TRACK: TrackStep[] = [
+  { status: "new", label: "New" },
+  { status: "brand_confirmed", label: "Brand confirmed" },
+  { status: "confirmed", label: "Fulfilment verified" },
+  { status: "dispatched_to_hub", label: "Shipped to hub" },
+  { status: "received_at_hub", label: "Received at hub" },
+  { status: "shipped", label: "Dispatched" },
+  { status: "arrived_bd", label: "Arrived BD" },
+  { status: "out_for_delivery", label: "Out for delivery" },
+  { status: "delivered", label: "Delivered" },
+];
+
+export const PARTNER_STATUS_TRACK: TrackStep[] = [
+  { status: "new", label: "New" },
+  { status: "brand_confirmed", label: "Confirm from brand" },
+  { status: "confirmed", label: "Confirmed by Fulfilment" },
+  { status: "cancelled", label: "Cancelled" },
+  { status: "needs_amendment", label: "Amendment + addition" },
+  { status: "out_for_delivery", label: "Out for delivery" },
+  { status: "delivered", label: "Delivered" },
+];
+
 export const JOURNEY: { key: string; label: string; statuses: OrderStatus[] }[] = [
   { key: "confirm", label: "Confirm", statuses: ["new", "confirmation_pending", "customer_unreachable", "needs_amendment"] },
-  { key: "prepare", label: "Brand", statuses: ["confirmed", "brand_preparing"] },
+  { key: "prepare", label: "Brand", statuses: ["confirmed", "brand_confirmed", "brand_preparing"] },
   { key: "hub", label: "V360 hub", statuses: ["dispatched_to_hub", "received_at_hub", "hub_issue", "ready_for_shipment", "assigned_to_shipment"] },
   { key: "shipment", label: "To Bangladesh", statuses: ["shipped", "in_transit", "customs", "arrived_bd"] },
   { key: "bd", label: "KBB delivery", statuses: ["received_by_partner", "preparing_for_delivery", "out_for_delivery", "delivery_failed", "returned"] },

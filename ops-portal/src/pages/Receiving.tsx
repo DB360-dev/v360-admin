@@ -28,6 +28,7 @@ function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
                 {o.order_items.map((i) => (
                   <li key={i.id}>
                     <span className="font-semibold">{i.quantity}×</span> {i.product_name}{i.variant ? `, ${i.variant}` : ""}
+                    {i.sku && <span className="text-faint"> · {i.sku}</span>}
                     {o.status === "hub_issue" && i.received_quantity < i.quantity && <span className="ml-2 font-medium text-g-problem">{i.received_quantity} received</span>}
                   </li>
                 ))}

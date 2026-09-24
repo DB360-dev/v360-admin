@@ -2,12 +2,13 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, MessageCircle, MessageSquare, Phone } from "lucide-react";
-import { useOrder, useOrderEvents, useOrderMessages } from "@/hooks/useData";
-import { INBOUND_STATUS, RETURN_DISPOSITION, SHIPMENT_STATUS, STATUS } from "@/lib/status";
+import { useFxRates, useMoneySettings, useOrder, useOrderEvents, useOrderMessages } from "@/hooks/useData";
+import { INBOUND_STATUS, PARTNER_STATUS_TRACK, RETURN_DISPOSITION, SHIPMENT_STATUS, STATUS, V360_STATUS_TRACK } from "@/lib/status";
+import { useOps } from "@/context/OpsContext";
 import { fmtDate, fmtDateTime, fmtMoney } from "@/lib/format";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, Spinner } from "@/components/ui/States";
-import { JourneyRail } from "@/components/JourneyRail";
+import { StatusRail } from "@/components/StatusRail";
 import { Timeline } from "@/components/Timeline";
 import { OrderMessages } from "@/components/OrderMessages";
 import { OrderActions } from "@/components/OrderActions";
@@ -51,6 +52,9 @@ export function OrderDetail() {
   const q = useOrder(id);
   const ev = useOrderEvents(id);
   const msgs = useOrderMessages(id);
+  const money = useMoneySettings();
+  const fx = useFxRates();
+  const { isV360 } = useOps();
   const [tab, setTab] = useState<"timeline" | "messages">("timeline");
 
   if (q.isLoading) return <Spinner label="Loading order" />;
@@ -61,6 +65,27 @@ export function OrderDetail() {
   const cur = o.cod_currency ?? "BDT";
   const hubSeen = !!o.received_at_hub_at || o.status === "hub_issue";
   const short = o.cod_amount_collected !== null && o.cod_amount_expected !== null && o.cod_amount_collected !== o.cod_amount_expected;
+
+  const kbbPct = money.data?.kbb_commission_pct ?? 8;
+  const v360Pct = money.data?.v360_commission_pct ?? 15;
+  const base = o.order_total ?? 0;
+  const kbbCommission = (base * kbbPct) / 100;
+  const kbbOwes = base - kbbCommission;
+  const v360Fee = (base * v360Pct) / 100;
+  const brandGets = base - v360Fee;
+  const margin = base * (v360Pct - kbbPct) / 100;
+
+  const fxRate = (fx.data ?? []).find((r) => r.base === "BDT" && r.quote === "PKR")?.rate ?? null;
+  const MoneyAmt = ({ v }: { v: number }) => {
+    const bdt = o.currency === "PKR" ? (fxRate ? v / fxRate : null) : v;
+    const pkr = o.currency === "PKR" ? v : (fxRate ? v * fxRate : null);
+    return (
+      <span className="whitespace-nowrap">
+        {bdt !== null && <span>{fmtMoney(bdt, "BDT")}</span>}
+        {pkr !== null && <span className="text-muted">{bdt !== null ? " · " : ""}{fmtMoney(pkr, "PKR")}</span>}
+      </span>
+    );
+  };
 
   return (
     <>
@@ -75,7 +100,7 @@ export function OrderDetail() {
       </header>
 
       <div className="panel mb-4 p-3"><OrderActions order={o} items={o.order_items} /></div>
-      <div className="panel mb-6 px-3 py-5 sm:px-6"><JourneyRail status={o.status} previousStatus={o.previous_status} /></div>
+      <div className="panel mb-6 px-3 py-5 sm:px-6"><StatusRail track={(isV360 ? V360_STATUS_TRACK : PARTNER_STATUS_TRACK)} status={o.status} events={ev.data ?? []} /></div>
 
       <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
         <div className="min-w-0 space-y-6">
@@ -109,16 +134,29 @@ export function OrderDetail() {
                 ["Shopify notes", o.shopify_note],
               ]} />
             </Section>
-            <Section title="Money">
-              <Facts rows={[
-                ["Order total", `${fmtMoney(o.order_total, o.currency)}${o.discount_total ? ` (after ${fmtMoney(o.discount_total, o.currency)} discount)` : ""}`],
-                ["Payment", o.payment_status ?? "—"],
-                ["COD to collect", <strong key="e">{fmtMoney(o.cod_amount_expected, cur)}</strong>],
-                ["COD collected", o.cod_amount_collected !== null
-                  ? <span key="c" className={short ? "font-semibold text-g-problem" : "font-medium"}>{fmtMoney(o.cod_amount_collected, cur)}{short ? " (differs)" : ""}</span>
-                  : "Not yet"],
-              ]} />
-            </Section>
+            {isV360 && (
+              <Section title="Money">
+                <Facts rows={[
+                  ["Order total", `${fmtMoney(o.order_total, o.currency)}${o.discount_total ? ` (after ${fmtMoney(o.discount_total, o.currency)} discount)` : ""}`],
+                  ["Payment", o.payment_status ?? "—"],
+                  ["COD to collect", <strong key="e">{fmtMoney(o.cod_amount_expected, cur)}</strong>],
+                  ["COD collected", o.cod_amount_collected !== null
+                    ? <span key="c" className={short ? "font-semibold text-g-problem" : "font-medium"}>{fmtMoney(o.cod_amount_collected, cur)}{short ? " (differs)" : ""}</span>
+                    : "Not yet"],
+                ]} />
+                <div className="mt-3 space-y-1.5 border-t border-line pt-3 text-[13px]">
+                  <div className="flex justify-between gap-3"><span className="text-muted">KBB's {kbbPct}% commission</span><MoneyAmt v={kbbCommission} /></div>
+                  <div className="flex justify-between gap-3 font-medium"><span>KBB owes V360</span><MoneyAmt v={kbbOwes} /></div>
+                  <div className="flex justify-between gap-3 pl-4 text-muted"><span>→ paid at dispatch (50%)</span><MoneyAmt v={kbbOwes / 2} /></div>
+                  <div className="flex justify-between gap-3 pl-4 text-muted"><span>→ paid on delivery (50%)</span><MoneyAmt v={kbbOwes / 2} /></div>
+                  <div className="flex justify-between gap-3"><span className="text-muted">V360's {v360Pct}% commission from the brand</span><MoneyAmt v={v360Fee} /></div>
+                  <div className="flex justify-between gap-3 font-medium"><span>Brand receives</span><MoneyAmt v={brandGets} /></div>
+                  <div className="flex justify-between gap-3 border-t border-line pt-2"><span className="text-muted">V360 gross margin ({v360Pct - kbbPct}%)</span>
+                    <span className="whitespace-nowrap font-semibold text-g-done"><MoneyAmt v={margin} /></span></div>
+                  <p className="pt-1 text-[11.5px] text-faint">Split is on <MoneyAmt v={base} /> — the order value including shipping. Before freight and packing costs.</p>
+                </div>
+              </Section>
+            )}
             <Section title="Confirmation (KBB)">
               <Facts rows={[["Confirmed", fmtDateTime(o.confirmed_at)], ["Call attempts", o.confirmation_attempts || "—"]]} />
             </Section>

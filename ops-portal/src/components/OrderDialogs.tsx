@@ -83,21 +83,34 @@ export function TrackingDialog({ order, open, onClose }: Base & { order: Order }
 export function ReceiveDialog({ order, items, open, onClose }: Base & { order: Order; items: OrderItem[] }) {
   const m = useReceiveOrder({ inlineErrors: true });
   const [qty, setQty] = useState<Record<string, string>>({});
+  const [weights, setWeights] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
+  const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
-    if (open) { m.reset(); setQty(Object.fromEntries(items.map((i) => [i.id, String(i.quantity)]))); setNote(""); }
+    if (open) {
+      m.reset();
+      setQty(Object.fromEntries(items.map((i) => [i.id, String(i.quantity)])));
+      setWeights(Object.fromEntries(items.map((i) => [i.id, ""])));
+      setNote("");
+      setErr(null);
+    }
   }, [open]);
 
   const parsed = items.map((i) => ({ i, n: Math.max(0, Math.min(i.quantity, Math.floor(Number(qty[i.id] ?? 0) || 0))) }));
   const missing = parsed.filter(({ i, n }) => n < i.quantity);
+  const weightRows = items.map((i) => ({ i, raw: (weights[i.id] ?? "").trim(), w: Number(weights[i.id]) }));
+  const weightMissing = weightRows.some((r) => r.raw === "" || !Number.isFinite(r.w) || r.w <= 0);
+  const orderWeight = weightMissing ? null : weightRows.reduce((s, r) => s + r.w * r.i.quantity, 0);
   const submit = () => {
+    if (weightMissing) { setErr("Enter the weight (kg) of every item"); return; }
+    setErr(null);
     const payload = missing.length === 0 ? null : parsed.map(({ i, n }) => ({ item_id: i.id, received_quantity: n }));
-    m.mutate({ id: order.id, items: payload, note }, { onSuccess: onClose });
+    m.mutate({ id: order.id, weight: orderWeight!, items: payload, note }, { onSuccess: onClose });
   };
 
   return (
     <Dialog open={open} onClose={onClose} onSubmit={submit} busy={m.isPending} error={m.error ? describeError(m.error) : null}
-      title={`Receive ${order.order_number}`} description="Count what physically arrived. The order only becomes ready for shipment when every item is here."
+      title={`Receive ${order.order_number}`} description="Count what physically arrived and record the weight of every item. The order only becomes ready for shipment when every item is here."
       footer={<>
         <Button onClick={onClose} disabled={m.isPending}>Cancel</Button>
         <Button type="submit" variant={missing.length ? "danger" : "primary"} loading={m.isPending}>
@@ -105,7 +118,7 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
         </Button>
       </>}>
       <table className="w-full text-[13.5px]">
-        <thead className="table-head"><tr><th>Item</th><th className="text-right">Ordered</th><th className="w-28 text-right">Received</th></tr></thead>
+        <thead className="table-head"><tr><th>Item</th><th className="text-right">Ordered</th><th className="w-28 text-right">Received</th><th className="w-28 text-right">Weight kg</th></tr></thead>
         <tbody className="table-body">
           {parsed.map(({ i, n }) => (
             <tr key={i.id}>
@@ -115,6 +128,11 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
                 <input type="number" min={0} max={i.quantity} inputMode="numeric" aria-label={`Received quantity for ${i.product_name}`}
                   className={`input h-8 w-20 text-right ${n < i.quantity ? "border-g-problem text-g-problem" : ""}`}
                   value={qty[i.id] ?? ""} onChange={(e) => setQty((s) => ({ ...s, [i.id]: e.target.value }))} />
+              </td>
+              <td className="text-right">
+                <input type="text" inputMode="decimal" placeholder="kg" aria-label={`Item weight for ${i.product_name}`}
+                  className={`input h-8 w-20 text-right ${err && !(weights[i.id] ?? "").trim() ? "border-g-problem" : ""}`}
+                  value={weights[i.id] ?? ""} onChange={(e) => { setWeights((s) => ({ ...s, [i.id]: e.target.value })); setErr(null); }} />
               </td>
             </tr>
           ))}
@@ -126,6 +144,13 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
           {missing.length} item line{missing.length > 1 ? "s" : ""} short. The order will be marked as a hub issue and the brand will see what's missing.
         </p>
       )}
+      {orderWeight !== null ? (
+        <p className="mt-4 text-[13px] text-muted">
+          Order weight ≈ {orderWeight} kg — each item's weight × its quantity, carried with the order into the shipment.
+        </p>
+      ) : err ? (
+        <p role="alert" className="mt-4 text-[13px] text-danger">{err}</p>
+      ) : null}
       <div className="mt-4"><TextArea label="Receiving note" optional value={note} onChange={(e) => setNote(e.target.value)} rows={2} /></div>
     </Dialog>
   );

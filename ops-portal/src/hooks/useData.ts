@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { describeError, describeFunctionError } from "@/lib/errors";
 import type {
-  BrandPayable, BrandRow, FxRate, InboundBatchAdmin, KbbPayment, KbbShipmentAccount, MoneySettings, OpsOrderDetail, Order,
+  BrandMoneySettings, BrandPayable, BrandRow, FxRate, InboundBatchAdmin, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
   OrderEvent, OrderItem, OrderMessage, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
   ShipmentEvent, ShipmentOverview, ShipmentStatus, StatusTransition, TeamMember, WebhookEvent,
 } from "@/lib/types";
@@ -305,7 +305,7 @@ export function useKbbAccount() {
     queryFn: async () => {
       const { data, error } = await supabase.rpc("kbb_account_overview");
       if (error) throw error;
-      return (data ?? []) as KbbShipmentAccount[];
+      return (data ?? []) as KbbOrderAccount[];
     },
   });
 }
@@ -334,6 +334,28 @@ export function useShipmentBrandWeights(shipmentId: string | null) {
         .from("shipment_brand_weights").select("*").eq("shipment_id", shipmentId!);
       if (error) throw error;
       return (data ?? []) as ShipmentBrandWeight[];
+    },
+  });
+}
+
+export function useShipmentCalculatedWeight(shipmentId: string | null) {
+  return useQuery({
+    queryKey: k("shipment-calculated-weight", shipmentId),
+    enabled: !!shipmentId,
+    queryFn: async () => {
+      if (!shipmentId) return 0;
+      const { data, error } = await supabase
+        .from("orders")
+        .select("id, order_freight_weights(weight_kg)")
+        .eq("shipment_id", shipmentId);
+      if (error) throw error;
+      const total = (data ?? []).reduce((sum, o) => {
+        const fw = Array.isArray(o.order_freight_weights)
+          ? o.order_freight_weights[0]
+          : (o.order_freight_weights as { weight_kg?: number } | null);
+        return sum + (Number(fw?.weight_kg) || 0);
+      }, 0);
+      return Math.round(total * 100) / 100;
     },
   });
 }
@@ -386,8 +408,8 @@ export const useUpdateOrderDetails = (o?: ActionOptions) => useOpsAction(
   "Order details saved", o);
 
 export const useReceiveOrder = (o?: ActionOptions) => useOpsAction(
-  (v: { id: string; items: { item_id: string; received_quantity: number }[] | null; note?: string }) =>
-    rpc<OrderStatus>("receive_order", { p_order_id: v.id, p_items: v.items, p_note: trimOrNull(v.note) }),
+  (v: { id: string; weight: number; items: { item_id: string; received_quantity: number }[] | null; note?: string }) =>
+    rpc<OrderStatus>("receive_order", { p_order_id: v.id, p_order_weight_kg: v.weight, p_items: v.items, p_note: trimOrNull(v.note) }),
   (r) => (r === "ready_for_shipment" ? "Received in full: ready for shipment" : "Recorded as a mismatch: items missing"), o);
 
 export const useCreateShipment = (o?: ActionOptions) => useOpsAction(
@@ -397,6 +419,13 @@ export const useCreateShipment = (o?: ActionOptions) => useOpsAction(
 export const useAddToShipment = (o?: ActionOptions) => useOpsAction(
   (v: { shipmentId: string; orderIds: string[] }) => rpc("add_orders_to_shipment", { p_shipment_id: v.shipmentId, p_order_ids: v.orderIds }),
   (_r, v) => `${v.orderIds.length} order${v.orderIds.length === 1 ? "" : "s"} added to the shipment`, o);
+
+export const useCreateShipmentWithOrders = (o?: ActionOptions) => useOpsAction(
+  (v: { orderIds: string[]; partner: string; notes: string }) =>
+    rpc<string>("create_shipment_with_orders", {
+      p_order_ids: v.orderIds, p_shipping_partner: trimOrNull(v.partner), p_notes: trimOrNull(v.notes),
+    }),
+  (_r, v) => `Shipment created for ${v.orderIds.length} order${v.orderIds.length === 1 ? "" : "s"}`, o);
 
 export const useRemoveFromShipment = (o?: ActionOptions) => useOpsAction(
   (v: { orderId: string; note?: string }) => rpc("remove_order_from_shipment", { p_order_id: v.orderId, p_note: trimOrNull(v.note) }),
@@ -429,8 +458,51 @@ export const useReturnDisposition = (o?: ActionOptions) => useOpsAction(
     rpc("set_return_disposition", { p_order_id: v.id, p_disposition: v.disposition, p_note: trimOrNull(v.note) }),
   "Return decision saved", o);
 
+export interface ApproveBrandParams {
+  id: string;
+  note?: string;
+  kbbCommissionPct?: number;
+  v360CommissionPct?: number;
+  freightBdtPerKg?: number;
+  invoiceCompanyName?: string;
+}
+
 export const useApproveBrand = (o?: ActionOptions) => useOpsAction(
-  (v: { id: string; note?: string }) => rpc("approve_brand", { p_org_id: v.id, p_note: trimOrNull(v.note) }), "Brand approved", o);
+  (v: ApproveBrandParams) =>
+    rpc("approve_brand", {
+      p_org_id: v.id,
+      p_note: trimOrNull(v.note),
+      p_kbb_commission_pct: v.kbbCommissionPct ?? 8,
+      p_v360_commission_pct: v.v360CommissionPct ?? 15,
+      p_freight_bdt_per_kg: v.freightBdtPerKg ?? 700,
+      p_invoice_company_name: trimOrNull(v.invoiceCompanyName),
+    }),
+  "Brand approved", o);
+
+export function useBrandMoneySettings(brandId: string | null) {
+  return useQuery({
+    queryKey: k("brand-money-settings", brandId),
+    enabled: !!brandId,
+    queryFn: async () => {
+      if (!brandId) return null;
+      const { data, error } = await supabase.rpc("get_brand_money_settings", { p_brand_id: brandId });
+      if (error) throw error;
+      const row = (data ?? [])[0] as BrandMoneySettings | undefined;
+      return row ?? null;
+    },
+  });
+}
+
+export const useSaveBrandMoneySettings = (o?: ActionOptions) => useOpsAction(
+  (v: { brandId: string; kbbPct: number; v360Pct: number; freightRate: number; invoiceCompany: string }) =>
+    rpc("save_brand_money_settings", {
+      p_brand_id: v.brandId,
+      p_kbb_commission_pct: v.kbbPct,
+      p_v360_commission_pct: v.v360Pct,
+      p_freight_bdt_per_kg: v.freightRate,
+      p_invoice_company_name: trimOrNull(v.invoiceCompany),
+    }),
+  "Brand settings saved", o);
 
 export const useRejectBrand = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; note: string }) => rpc("reject_brand", { p_org_id: v.id, p_note: v.note.trim() }), "Brand rejected", o);

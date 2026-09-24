@@ -180,6 +180,7 @@ select
   s.shipping_partner, s.status as shipment_status,
   o.delivery_courier, o.delivery_tracking_number, o.delivered_at,
   (select coalesce(sum(quantity), 0) from order_items i where i.order_id = o.id) as item_count,
+  (select string_agg(distinct i.sku, ', ') from order_items i where i.order_id = o.id and i.sku is not null) as skus,
   now() - o.status_changed_at as time_in_status
 from orders o
 join organizations b on b.id = o.brand_id

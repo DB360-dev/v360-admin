@@ -19,6 +19,7 @@ create type order_status as enum (
   'confirmation_pending',
   'customer_unreachable',
   'needs_amendment',
+  'brand_confirmed',
   'confirmed',
   'cancelled',
   'brand_preparing',
