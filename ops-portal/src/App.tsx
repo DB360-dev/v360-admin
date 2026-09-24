@@ -16,6 +16,7 @@ import { Deliveries } from "@/pages/Deliveries";
 import { Receiving } from "@/pages/Receiving";
 import { Shipments } from "@/pages/Shipments";
 import { ShipmentDetail } from "@/pages/ShipmentDetail";
+import { Invoices } from "@/pages/Invoices";
 import { Brands } from "@/pages/Brands";
 import { Team } from "@/pages/Team";
 import { FxRates } from "@/pages/FxRates";
@@ -66,6 +67,7 @@ export const router = createBrowserRouter([
           { path: "deliveries", element: <Deliveries /> },
           { path: "shipments", element: <Shipments /> },
           { path: "shipments/:id", element: <ShipmentDetail /> },
+          { path: "invoices", element: <Invoices /> },
           { path: "money", element: <Money /> },
           {
             element: <Only role="v360" />,

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, Banknote, Boxes, Building2, Coins, Gauge, Inbox, LogOut, Menu, Monitor, Moon, PhoneCall, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
+  Activity, Banknote, Boxes, Building2, Coins, Gauge, Inbox, LogOut, Menu, Monitor, Moon, PhoneCall, Receipt, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
@@ -26,6 +26,7 @@ const NAV: NavItem[] = [
   { to: "/receiving", label: "Hub receiving", icon: Inbox, roles: ["v360"], badge: "hub" },
   { to: "/shipments", label: "Shipments", icon: Ship, roles: ["v360", "kbb"] },
   { to: "/deliveries", label: "Deliveries", icon: Truck, roles: ["v360", "kbb"], badge: "deliver" },
+  { to: "/invoices", label: "Invoices", icon: Receipt, roles: ["v360", "kbb"], section: "Finance" },
   { to: "/brands", label: "Brands", icon: Building2, roles: ["v360"], section: "Admin" },
   { to: "/money", label: "Money", icon: Banknote, roles: ["v360"] },
   { to: "/money", label: "My account", icon: Banknote, roles: ["kbb"] },

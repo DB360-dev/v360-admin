@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, PackagePlus, Scale } from "lucide-react";
+import { ArrowLeft, Check, FileText, PackagePlus, Scale } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
 import { supabase } from "@/lib/supabase";
 import {
@@ -19,6 +19,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { TextArea, TextField } from "@/components/ui/Field";
 import { EmptyState, ErrorState, Spinner } from "@/components/ui/States";
 import { ActionDialog } from "@/components/ActionDialog";
+import { KbbInvoiceDialog } from "@/components/KbbInvoiceDialog";
 import { Facts, Section } from "./OrderDetail";
 
 function Stepper({ status }: { status: ShipmentOverview["status"] }) {
@@ -318,6 +319,7 @@ export function ShipmentDetail() {
   const [adding, setAdding] = useState(false);
   const [moving, setMoving] = useState(false);
   const [removing, setRemoving] = useState<OrderOverview | null>(null);
+  const [showKbbInvoice, setShowKbbInvoice] = useState(false);
 
   const s = q.data;
   const next = s ? nextShipmentStatus(s.status) : null;
@@ -345,6 +347,9 @@ export function ShipmentDetail() {
           <p className="mt-1 text-[14px] text-muted">{plural(s.order_count, "order")} from {plural(s.brand_count, "brand")}, {fmtMoney(s.cod_expected, "BDT")} to collect</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button onClick={() => setShowKbbInvoice(true)}>
+            <FileText className="h-4 w-4" /> KBB Invoice PDF
+          </Button>
           {isV360 && packing && <Button onClick={() => setAdding(true)}><PackagePlus className="h-4 w-4" /> Add orders</Button>}
           {((isV360 && next) || kbbCanReceive) && target && (
             <Button variant="primary" onClick={() => { move.reset(); setMoving(true); }}>
@@ -421,6 +426,7 @@ export function ShipmentDetail() {
           title={`Remove ${removing.order_number}?`} description="It goes back to ready for shipment." confirmLabel="Remove" noteLabel="Reason"
           onConfirm={(n) => remove.mutate({ orderId: removing.id, note: n }, { onSuccess: () => setRemoving(null) })} />
       )}
+      <KbbInvoiceDialog open={showKbbInvoice} onClose={() => setShowKbbInvoice(false)} shipment={s} />
     </>
   );
 }
