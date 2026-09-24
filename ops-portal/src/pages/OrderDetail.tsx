@@ -1,12 +1,14 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, MessageCircle, MessageSquare, Phone } from "lucide-react";
-import { useFxRates, useMoneySettings, useOrder, useOrderEvents, useOrderMessages } from "@/hooks/useData";
+import { useBrandMoneySettings, useInvoicesList, useMoneySettings, useOrder, useOrderEvents, useOrderInternalNote, useOrderMessages, useSaveOrderInternalNote, useShipments } from "@/hooks/useData";
 import { INBOUND_STATUS, PARTNER_STATUS_TRACK, RETURN_DISPOSITION, SHIPMENT_STATUS, STATUS, V360_STATUS_TRACK } from "@/lib/status";
 import { useOps } from "@/context/OpsContext";
 import { fmtDate, fmtDateTime, fmtMoney } from "@/lib/format";
+import type { InvoicePaymentStatus, OrderNoteRole, OpsOrderDetail } from "@/lib/types";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
+import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, Spinner } from "@/components/ui/States";
 import { StatusRail } from "@/components/StatusRail";
 import { Timeline } from "@/components/Timeline";
@@ -47,15 +49,144 @@ export function ContactLinks({ phone }: { phone: string | null }) {
   );
 }
 
+function InvoiceStatusPill({ status }: { status: InvoicePaymentStatus }) {
+  const map: Record<InvoicePaymentStatus, { cls: string; label: string }> = {
+    paid: { cls: "bg-emerald-100 text-emerald-800", label: "Paid" },
+    partially_paid: { cls: "bg-amber-100 text-amber-800", label: "Partially paid" },
+    not_paid: { cls: "bg-rose-100 text-rose-800", label: "Unpaid" },
+  };
+  const m = map[status];
+  return <span className={`ml-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${m.cls}`}>{m.label}</span>;
+}
+
+/** Invoice-driven money view. Rows only appear once the matching invoice has been generated. */
+function MoneyDetail({ order }: { order: OpsOrderDetail }) {
+  const invQ = useInvoicesList();
+  const shipmentsQ = useShipments("all");
+  const brandSettings = useBrandMoneySettings(order.brand_id);
+  const money = useMoneySettings();
+  const kbbPct = brandSettings.data?.kbb_commission_pct ?? money.data?.kbb_commission_pct ?? 8;
+  const v360Pct = brandSettings.data?.v360_commission_pct ?? money.data?.v360_commission_pct ?? 15;
+
+  const allInvoices = invQ.data ?? [];
+  const shipment = shipmentsQ.data?.find((s) => s.id === order.shipment_id) ?? null;
+  const matches = (i: { order_ids?: string[] | null; shipment_ids?: string[] | null }) =>
+    (i.order_ids?.includes(order.id) ?? false) ||
+    (!!order.shipment_id && (i.shipment_ids?.includes(order.shipment_id) ?? false));
+
+  const savedAdv = allInvoices.find((i) => i.invoice_type === "dispatch_advance" && matches(i));
+  const savedSettle = allInvoices.find((i) => i.invoice_type === "final_settlement" && matches(i));
+
+  // If no saved advance invoice yet, mirror the Invoices list fallback: a dispatched shipment
+  // always carries INV-DISP-<code> with the shipment's payment status.
+  const advanceInv = savedAdv
+    ? savedAdv
+    : shipment
+    ? { invoice_number: `INV-DISP-${shipment.code}`, payment_status: shipment.invoice_payment_status || "not_paid" }
+    : null;
+  const settleInv = savedSettle ?? null;
+  const cur = order.cod_currency ?? "BDT";
+
+  const value = order.cod_amount_expected && order.cod_amount_expected > 0 ? order.cod_amount_expected : order.order_total ?? 0;
+  const advance = value * 0.5;
+  const kbbCommission = (value * kbbPct) / 100;
+  const v360Commission = (value * v360Pct) / 100;
+  const isReturned = ["returned", "delivery_failed", "hub_issue", "cancelled"].includes(order.status);
+  const clawback = isReturned ? advance : 0;
+  const settlement = value - advance - kbbCommission - clawback;
+
+  if (invQ.isLoading || shipmentsQ.isLoading) return <p className="py-2 text-[13px] text-faint">Loading invoices…</p>;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-muted">50% advance invoice</span>
+        {advanceInv ? (
+          <span className="font-medium">{advanceInv.invoice_number}<InvoiceStatusPill status={advanceInv.payment_status} /></span>
+        ) : <span className="text-faint">Not generated</span>}
+      </div>
+      {advanceInv && (
+        <div className="flex items-center justify-between gap-3 pl-4 text-[13px]">
+          <span className="text-muted">50% advance</span>
+          <span className="whitespace-nowrap font-medium">{fmtMoney(advance, cur)}</span>
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-3 border-t border-line pt-2">
+        <span className="text-muted">Final settlement invoice</span>
+        {settleInv ? (
+          <span className="font-medium">{settleInv.invoice_number}<InvoiceStatusPill status={settleInv.payment_status} /></span>
+        ) : <span className="text-faint">Not generated</span>}
+      </div>
+      {settleInv && (
+        <div className="space-y-1 pl-4 text-[13px]">
+          <div className="flex items-center justify-between gap-3"><span className="text-muted">Order value</span><span className="whitespace-nowrap">{fmtMoney(value, cur)}</span></div>
+          <div className="flex items-center justify-between gap-3"><span className="text-muted">− 50% already paid</span><span className="whitespace-nowrap">−{fmtMoney(advance, cur)}</span></div>
+          <div className="flex items-center justify-between gap-3"><span className="text-muted">− KBB commission ({kbbPct}%)</span><span className="whitespace-nowrap">−{fmtMoney(kbbCommission, cur)}</span></div>
+          {isReturned && (
+            <div className="flex items-center justify-between gap-3"><span className="text-muted">− 50% advance (returned, clawback)</span><span className="whitespace-nowrap">−{fmtMoney(clawback, cur)}</span></div>
+          )}
+          <div className="flex items-center justify-between gap-3 pt-1 font-semibold"><span>Settlement payable</span><span className="whitespace-nowrap">{fmtMoney(settlement, cur)}</span></div>
+        </div>
+      )}
+      <div className="space-y-1 border-t border-line pt-2 text-[13px]">
+        <div className="flex items-center justify-between gap-3"><span className="text-muted">KBB's commission ({kbbPct}%)</span><span className="whitespace-nowrap">{fmtMoney(kbbCommission, cur)}</span></div>
+        <div className="flex items-center justify-between gap-3"><span className="text-muted">V360's commission ({v360Pct}%)</span><span className="whitespace-nowrap">{fmtMoney(v360Commission, cur)}</span></div>
+      </div>
+    </div>
+  );
+}
+
+/** Role-scoped private note (order_internal_notes). Admins see the admin note;
+ *  KBB partners see only the KBB note. Each role never sees the other's. */
+function InternalNotes({ orderId, role }: { orderId: string; role: OrderNoteRole }) {
+  const q = useOrderInternalNote(orderId, role);
+  const save = useSaveOrderInternalNote(orderId, role, { inlineErrors: true });
+  const [text, setText] = useState("");
+  const loaded = useRef(false);
+
+  useEffect(() => {
+    if (q.data && !loaded.current) {
+      setText(q.data.note ?? "");
+      loaded.current = true;
+    }
+  }, [q.data]);
+
+  const serverNote = q.data?.note ?? "";
+  const dirty = serverNote !== text;
+
+  if (q.isLoading) return <p className="py-2 text-[13.5px] text-faint">Loading note…</p>;
+
+  return (
+    <div className="space-y-2">
+      <textarea
+        className="input min-h-[96px] w-full resize-y text-[13.5px]"
+        rows={4}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={role === "admin" ? "Private note for admins only… (not shown to KBB)" : "Private note for KBB only… (not shown to admins)"}
+        disabled={save.isPending}
+      />
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[11.5px] text-faint">
+          {q.data?.updated_at ? `Saved ${fmtDateTime(q.data.updated_at)}` : "No note yet"}
+          {dirty ? " · Unsaved changes" : ""}
+          {save.isError ? " · Failed to save" : ""}
+        </span>
+        <Button size="sm" variant="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate(text)}>
+          Save note
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function OrderDetail() {
   const { id = "" } = useParams();
   const q = useOrder(id);
   const ev = useOrderEvents(id);
   const msgs = useOrderMessages(id);
-  const money = useMoneySettings();
-  const fx = useFxRates();
-  const { isV360 } = useOps();
-  const [tab, setTab] = useState<"timeline" | "messages">("timeline");
+  const { isV360, isAdmin, isKbb } = useOps();
+  const [tab, setTab] = useState<"messages" | "timeline">("messages");
 
   if (q.isLoading) return <Spinner label="Loading order" />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} title="This order didn't load" />;
@@ -65,27 +196,6 @@ export function OrderDetail() {
   const cur = o.cod_currency ?? "BDT";
   const hubSeen = !!o.received_at_hub_at || o.status === "hub_issue";
   const short = o.cod_amount_collected !== null && o.cod_amount_expected !== null && o.cod_amount_collected !== o.cod_amount_expected;
-
-  const kbbPct = money.data?.kbb_commission_pct ?? 8;
-  const v360Pct = money.data?.v360_commission_pct ?? 15;
-  const base = o.order_total ?? 0;
-  const kbbCommission = (base * kbbPct) / 100;
-  const kbbOwes = base - kbbCommission;
-  const v360Fee = (base * v360Pct) / 100;
-  const brandGets = base - v360Fee;
-  const margin = base * (v360Pct - kbbPct) / 100;
-
-  const fxRate = (fx.data ?? []).find((r) => r.base === "BDT" && r.quote === "PKR")?.rate ?? null;
-  const MoneyAmt = ({ v }: { v: number }) => {
-    const bdt = o.currency === "PKR" ? (fxRate ? v / fxRate : null) : v;
-    const pkr = o.currency === "PKR" ? v : (fxRate ? v * fxRate : null);
-    return (
-      <span className="whitespace-nowrap">
-        {bdt !== null && <span>{fmtMoney(bdt, "BDT")}</span>}
-        {pkr !== null && <span className="text-muted">{bdt !== null ? " · " : ""}{fmtMoney(pkr, "PKR")}</span>}
-      </span>
-    );
-  };
 
   return (
     <>
@@ -144,16 +254,8 @@ export function OrderDetail() {
                     ? <span key="c" className={short ? "font-semibold text-g-problem" : "font-medium"}>{fmtMoney(o.cod_amount_collected, cur)}{short ? " (differs)" : ""}</span>
                     : "Not yet"],
                 ]} />
-                <div className="mt-3 space-y-1.5 border-t border-line pt-3 text-[13px]">
-                  <div className="flex justify-between gap-3"><span className="text-muted">KBB's {kbbPct}% commission</span><MoneyAmt v={kbbCommission} /></div>
-                  <div className="flex justify-between gap-3 font-medium"><span>KBB owes V360</span><MoneyAmt v={kbbOwes} /></div>
-                  <div className="flex justify-between gap-3 pl-4 text-muted"><span>→ paid at dispatch (50%)</span><MoneyAmt v={kbbOwes / 2} /></div>
-                  <div className="flex justify-between gap-3 pl-4 text-muted"><span>→ paid on delivery (50%)</span><MoneyAmt v={kbbOwes / 2} /></div>
-                  <div className="flex justify-between gap-3"><span className="text-muted">V360's {v360Pct}% commission from the brand</span><MoneyAmt v={v360Fee} /></div>
-                  <div className="flex justify-between gap-3 font-medium"><span>Brand receives</span><MoneyAmt v={brandGets} /></div>
-                  <div className="flex justify-between gap-3 border-t border-line pt-2"><span className="text-muted">V360 gross margin ({v360Pct - kbbPct}%)</span>
-                    <span className="whitespace-nowrap font-semibold text-g-done"><MoneyAmt v={margin} /></span></div>
-                  <p className="pt-1 text-[11.5px] text-faint">Split is on <MoneyAmt v={base} /> — the order value including shipping. Before freight and packing costs.</p>
+                <div className="mt-3 border-t border-line pt-3">
+                  <MoneyDetail order={o} />
                 </div>
               </Section>
             )}
@@ -206,13 +308,25 @@ export function OrderDetail() {
                 ...(o.return_disposition ? [["Return decision", RETURN_DISPOSITION[o.return_disposition] ?? o.return_disposition] as [string, ReactNode]] : []),
               ]} />
             </Section>
+            {(isAdmin || isKbb) && (
+              <Section
+                title="Internal notes"
+                aside={
+                  <span className="rounded border border-line bg-sunken px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-muted">
+                    {isKbb ? "KBB only" : "admins only"}
+                  </span>
+                }
+              >
+                <InternalNotes orderId={o.id} role={isKbb ? "kbb" : "admin"} />
+              </Section>
+            )}
           </div>
         </div>
         <aside className="xl:sticky xl:top-6 xl:self-start">
           <section className="panel">
             {/* Tab bar */}
             <div className="flex border-b border-line">
-              {(["timeline", "messages"] as const).map((t) => {
+              {(["messages", "timeline"] as const).map((t) => {
                 const unread = t === "messages"
                   ? (msgs.data ?? []).filter((m) => m.sender_type === "brand" && !m.read_by_admin).length
                   : 0;
@@ -225,7 +339,7 @@ export function OrderDetail() {
                     }`}
                   >
                     {t === "messages" && <MessageSquare className="h-3.5 w-3.5" />}
-                    {t === "timeline" ? "Timeline" : "Messages"}
+                    {t === "messages" ? "Notes" : "Timeline"}
                     {unread > 0 && (
                       <span className="ml-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-fg">
                         {unread}

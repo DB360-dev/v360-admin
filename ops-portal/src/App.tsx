@@ -23,6 +23,8 @@ import { FxRates } from "@/pages/FxRates";
 import { Money } from "@/pages/Money";
 import { Webhooks } from "@/pages/Webhooks";
 import { Activity } from "@/pages/Activity";
+import { Discrepancies } from "@/pages/Discrepancies";
+import { Restocked } from "@/pages/Restocked";
 import { NotFound } from "@/pages/NotFound";
 
 function RequireAuth() {
@@ -68,6 +70,8 @@ export const router = createBrowserRouter([
           { path: "shipments", element: <Shipments /> },
           { path: "shipments/:id", element: <ShipmentDetail /> },
           { path: "invoices", element: <Invoices /> },
+          { path: "discrepancies", element: <Discrepancies /> },
+          { path: "inventory", element: <Restocked /> },
           { path: "money", element: <Money /> },
           {
             element: <Only role="v360" />,

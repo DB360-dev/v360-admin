@@ -5,7 +5,6 @@ import { Button } from "./ui/Button";
 import { TextArea, TextField } from "./ui/Field";
 import { describeError } from "@/lib/errors";
 import { fmtMoney } from "@/lib/format";
-import { RETURN_DISPOSITION } from "@/lib/status";
 import type { Order, OrderItem, ReturnDispositionValue } from "@/lib/types";
 import { useMarkDelivered, useReceiveOrder, useReturnDisposition, useSetTracking, useUpdateOrderDetails } from "@/hooks/useData";
 
@@ -186,25 +185,76 @@ export function EditCustomerDialog({ order, open, onClose }: Base & { order: Ord
   );
 }
 
-// ---------- Return decision (V360) ----------------------------------------
-export function ReturnDialog({ order, open, onClose }: Base & { order: Order }) {
+// ---------- Return decision (V360) — per item ----------------------------------------
+const DISP_OPTIONS: { value: ReturnDispositionValue; label: string }[] = [
+  { value: "restock_in_bd", label: "Restock in BD" },
+  { value: "return_to_pk",  label: "Return to PK" },
+  { value: "written_off",   label: "Write off" },
+];
+
+export function ReturnDialog({ order, items, open, onClose }: Base & { order: Order; items?: OrderItem[] }) {
   const m = useReturnDisposition({ inlineErrors: true });
-  const [d, setD] = useState<ReturnDispositionValue>("restock_in_bd");
+  const [dispositions, setDispositions] = useState<Record<string, ReturnDispositionValue>>({});
   const [note, setNote] = useState("");
-  useEffect(() => { if (open) { m.reset(); setD((order.return_disposition as ReturnDispositionValue) || "restock_in_bd"); setNote(""); } }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      m.reset();
+      setNote("");
+      setDispositions(
+        Object.fromEntries((items ?? []).map((i) => [
+          i.id,
+          (i.return_disposition && i.return_disposition !== "pending" ? i.return_disposition : "restock_in_bd") as ReturnDispositionValue,
+        ]))
+      );
+    }
+  }, [open]);
+
+  const setItem = (id: string, v: ReturnDispositionValue) =>
+    setDispositions((s) => ({ ...s, [id]: v }));
+
+  const submit = () => {
+    const payload = (items ?? []).map((i) => ({
+      order_item_id: i.id,
+      disposition: dispositions[i.id] ?? "restock_in_bd",
+    }));
+    m.mutate({ id: order.id, items: payload, note }, { onSuccess: onClose });
+  };
+
   return (
-    <Dialog open={open} onClose={onClose} onSubmit={() => m.mutate({ id: order.id, disposition: d, note }, { onSuccess: onClose })}
-      busy={m.isPending} error={m.error ? describeError(m.error) : null} width="sm" title={`Returned goods: ${order.order_number}`}
+    <Dialog open={open} onClose={onClose} onSubmit={submit} busy={m.isPending}
+      error={m.error ? describeError(m.error) : null} width="md"
+      title={`Returned goods: ${order.order_number}`}
+      description="Choose what happens to each returned item."
       footer={<><Button onClick={onClose} disabled={m.isPending}>Cancel</Button><Button type="submit" variant="primary" loading={m.isPending}>Save decision</Button></>}>
-      <fieldset className="space-y-2">
-        <legend className="field-label">What happens to the items?</legend>
-        {(Object.keys(RETURN_DISPOSITION) as ReturnDispositionValue[]).filter((x) => x !== "pending").map((x) => (
-          <label key={x} className={`flex cursor-pointer items-center gap-2 rounded border px-3 py-2 text-[13.5px] ${d === x ? "border-primary bg-primary-soft" : "border-line"}`}>
-            <input type="radio" name="disp" checked={d === x} onChange={() => setD(x)} className="accent-[rgb(var(--primary))]" />
-            {RETURN_DISPOSITION[x]}
-          </label>
-        ))}
-      </fieldset>
+      <div className="divide-y divide-line">
+        {(items ?? []).map((item) => {
+          const cur = dispositions[item.id] ?? "restock_in_bd";
+          return (
+            <div key={item.id} className="py-3 first:pt-0 last:pb-0">
+              <div className="mb-2 flex items-baseline justify-between gap-2">
+                <span className="text-[13.5px] font-medium">
+                  {item.product_name}
+                  {item.variant && <span className="font-normal text-muted"> · {item.variant}</span>}
+                </span>
+                <span className="shrink-0 text-[13px] text-muted">{item.quantity}×</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {DISP_OPTIONS.map(({ value, label }) => (
+                  <label key={value}
+                    className={`flex cursor-pointer items-center gap-1.5 rounded border px-2.5 py-1 text-[12.5px] transition-colors ${
+                      cur === value ? "border-primary bg-primary-soft text-primary font-medium" : "border-line text-muted hover:border-ink hover:text-ink"
+                    }`}>
+                    <input type="radio" name={`disp-${item.id}`} checked={cur === value}
+                      onChange={() => setItem(item.id, value)} className="sr-only" />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
       <div className="mt-4"><TextArea label="Note" optional value={note} onChange={(e) => setNote(e.target.value)} rows={2} /></div>
     </Dialog>
   );

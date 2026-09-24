@@ -37,6 +37,7 @@ export interface Order {
 export interface OrderItem {
   id: string; order_id: string; product_name: string; sku: string | null; variant: string | null;
   quantity: number; unit_price: number; discount: number; received_quantity: number;
+  return_disposition: ReturnDispositionValue | null;
 }
 
 export interface InboundBatch {
@@ -74,7 +75,39 @@ export interface OrderMessage {
   created_at: string;
 }
 
+/** Which audience a private order note belongs to. Admins never see KBB notes and vice-versa. */
+export type OrderNoteRole = "admin" | "kbb";
+
+/** Role-scoped private note on an order (order_internal_notes). Each role sees only its own row. */
+export interface OrderInternalNote {
+  order_id: string;
+  role: OrderNoteRole;
+  note: string;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 export type InvoicePaymentStatus = "not_paid" | "partially_paid" | "paid";
+
+export type InvoiceType = "dispatch_advance" | "final_settlement";
+
+export interface InvoiceRecord {
+  id: string;
+  invoice_number: string;
+  invoice_type: InvoiceType;
+  shipment_ids: string[] | null;
+  order_ids: string[] | null;
+  order_count: number;
+  brand_count: number;
+  total_value: number;
+  advance_amount: number;
+  net_remaining: number;
+  payable_amount: number;
+  payment_status: InvoicePaymentStatus;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface OrderOverview {
   id: string; order_number: string; order_date: string; status: OrderStatus; status_changed_at: string;
@@ -86,6 +119,10 @@ export interface OrderOverview {
   skus: string | null;
   shipment_id: string | null; inbound_batch_id: string | null;
   shipment_invoice_payment_status?: InvoicePaymentStatus | null;
+  invoice_payment_status?: InvoicePaymentStatus | null;
+  is_settled?: boolean;
+  settled_at?: string | null;
+  has_note?: boolean;
 }
 
 export interface ShopifyConnection {
@@ -101,6 +138,8 @@ export interface ShipmentOverview {
   id: string; code: string; shipping_partner: string | null; tracking_number: string | null;
   origin: string; destination: string; total_weight_kg: number | null; status: ShipmentStatus; notes: string | null;
   invoice_payment_status?: InvoicePaymentStatus;
+  is_settled?: boolean;
+  settled_at?: string | null;
   created_at: string; dispatched_at: string | null; received_at: string | null;
   order_count: number; brand_count: number; cod_expected: number;
 }

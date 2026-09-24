@@ -105,6 +105,8 @@ export function journeyIndex(status: OrderStatus): number {
 }
 
 export const SHIPMENT_FLOW: ShipmentStatus[] = ["draft", "ready_for_dispatch", "handed_to_carrier", "in_transit", "customs", "arrived_bd", "received_by_partner"];
+/** V360 view skips in_transit and customs — handed_to_carrier goes straight to arrived_bd. */
+export const V360_SHIPMENT_FLOW: ShipmentStatus[] = ["draft", "ready_for_dispatch", "handed_to_carrier", "arrived_bd", "received_by_partner"];
 export const SHIPMENT_STATUS: Record<ShipmentStatus, { label: string; group: StatusGroup }> = {
   draft: { label: "Draft", group: "v360" },
   ready_for_dispatch: { label: "Ready to dispatch", group: "v360" },
@@ -117,6 +119,12 @@ export const SHIPMENT_STATUS: Record<ShipmentStatus, { label: string; group: Sta
 export function nextShipmentStatus(s: ShipmentStatus): ShipmentStatus | null {
   const i = SHIPMENT_FLOW.indexOf(s);
   return i >= 0 && i < SHIPMENT_FLOW.length - 1 ? SHIPMENT_FLOW[i + 1] : null;
+}
+/** For V360: skips in_transit and customs. Legacy shipments in those states jump to arrived_bd. */
+export function nextV360ShipmentStatus(s: ShipmentStatus): ShipmentStatus | null {
+  if (s === "in_transit" || s === "customs") return "arrived_bd";
+  const i = V360_SHIPMENT_FLOW.indexOf(s);
+  return i >= 0 && i < V360_SHIPMENT_FLOW.length - 1 ? V360_SHIPMENT_FLOW[i + 1] : null;
 }
 
 export const INBOUND_STATUS: Record<InboundStatus, { label: string; group: StatusGroup }> = {

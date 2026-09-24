@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Eye, FileText, Printer } from "lucide-react";
+import { Eye, FileText, Printer, RefreshCw, Truck } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { useMoneySettings } from "@/hooks/useData";
+import { useMoneySettings, useSaveInvoice } from "@/hooks/useData";
 import { fmtDate } from "@/lib/format";
-import { SHIPMENT_STATUS } from "@/lib/status";
-import type { Order, OrderItem, ShipmentOverview } from "@/lib/types";
+import { SHIPMENT_STATUS, STATUS } from "@/lib/status";
+import type { Order, OrderItem, OrderStatus, ShipmentOverview } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { Spinner } from "@/components/ui/States";
+
+export type InvoiceType = "dispatch_advance" | "final_settlement";
 
 interface KbbInvoiceDialogProps {
   open: boolean;
@@ -17,6 +19,7 @@ interface KbbInvoiceDialogProps {
   shipments?: ShipmentOverview[];
   orderIds?: string[];
   initialMode?: "summary" | "detail";
+  initialInvoiceType?: InvoiceType;
 }
 
 function fmtNum(val: number): string {
@@ -30,15 +33,18 @@ export function KbbInvoiceDialog({
   shipments,
   orderIds,
   initialMode = "detail",
+  initialInvoiceType = "dispatch_advance",
 }: KbbInvoiceDialogProps) {
   const printRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<"summary" | "detail">(initialMode);
+  const [invoiceType, setInvoiceType] = useState<InvoiceType>(initialInvoiceType);
 
   useEffect(() => {
     if (open) {
       setMode(initialMode);
+      setInvoiceType(initialInvoiceType);
     }
-  }, [open, initialMode]);
+  }, [open, initialMode, initialInvoiceType]);
 
   const moneySettings = useMoneySettings();
 
@@ -116,10 +122,11 @@ export function KbbInvoiceDialog({
   const defaultKbbPct = moneySettings.data?.kbb_commission_pct ?? 8;
   const companyName = moneySettings.data?.invoice_company_name ?? "V360 Logistics Ltd.";
 
-  // Calculate brand-wise summary rows from fetched full orders
+  // Calculate summaries based on full orders
   const fullOrdersList = shipmentFullOrdersQuery.data ?? [];
 
-  const brandSummaryMap = new Map<string, { brandId: string; brandName: string; orderCount: number; orderValue: number }>();
+  // ===================== DISPATCH ADVANCE BREAKDOWN CALCULATIONS =====================
+  const dispatchBrandSummaryMap = new Map<string, { brandId: string; brandName: string; orderCount: number; orderValue: number }>();
   for (const o of fullOrdersList) {
     const val = o.cod_amount_expected !== null && o.cod_amount_expected !== undefined && o.cod_amount_expected > 0
       ? Number(o.cod_amount_expected)
@@ -128,12 +135,12 @@ export function KbbInvoiceDialog({
     const bId = o.brand_id;
     const bName = o.brand?.name || "Unknown Brand";
 
-    const existing = brandSummaryMap.get(bId);
+    const existing = dispatchBrandSummaryMap.get(bId);
     if (existing) {
       existing.orderValue += val;
       existing.orderCount += 1;
     } else {
-      brandSummaryMap.set(bId, {
+      dispatchBrandSummaryMap.set(bId, {
         brandId: bId,
         brandName: bName,
         orderCount: 1,
@@ -142,8 +149,7 @@ export function KbbInvoiceDialog({
     }
   }
 
-  // Calculate brand-wise breakdown rows
-  const brandBreakdownRows = Array.from(brandSummaryMap.values()).map((b) => {
+  const dispatchBreakdownRows = Array.from(dispatchBrandSummaryMap.values()).map((b) => {
     const kbbPct = brandSettingsQuery.data?.[b.brandId] ?? defaultKbbPct;
     const kbbCommission = (b.orderValue * kbbPct) / 100;
     const advance50 = 0.5 * b.orderValue;
@@ -163,13 +169,95 @@ export function KbbInvoiceDialog({
     };
   });
 
-  // Calculate Totals
-  const totalOrderCount = brandBreakdownRows.reduce((acc, r) => acc + r.orderCount, 0);
-  const totalShipmentValue = brandBreakdownRows.reduce((acc, r) => acc + r.orderValue, 0);
-  const totalKbbCommission = brandBreakdownRows.reduce((acc, r) => acc + r.kbbCommission, 0);
-  const totalAdvance50 = brandBreakdownRows.reduce((acc, r) => acc + r.advance50, 0);
-  const totalNetRemaining = brandBreakdownRows.reduce((acc, r) => acc + r.netRemaining, 0);
-  const totalOverallPayable = brandBreakdownRows.reduce((acc, r) => acc + r.totalBrandPayable, 0);
+  const totalDispatchOrderCount = dispatchBreakdownRows.reduce((acc, r) => acc + r.orderCount, 0);
+  const totalDispatchValue = dispatchBreakdownRows.reduce((acc, r) => acc + r.orderValue, 0);
+  const totalDispatchKbbCommission = dispatchBreakdownRows.reduce((acc, r) => acc + r.kbbCommission, 0);
+  const totalDispatchAdvance50 = dispatchBreakdownRows.reduce((acc, r) => acc + r.advance50, 0);
+  const totalDispatchNetRemaining = dispatchBreakdownRows.reduce((acc, r) => acc + r.netRemaining, 0);
+  const totalDispatchOverallPayable = dispatchBreakdownRows.reduce((acc, r) => acc + r.totalBrandPayable, 0);
+
+
+  // ===================== FINAL SETTLEMENT BREAKDOWN CALCULATIONS =====================
+  // Categorize orders: Delivered vs Returned / Failed
+  const isOrderReturned = (st: string) =>
+    ["returned", "delivery_failed", "hub_issue", "cancelled"].includes(st);
+
+  const settlementBrandMap = new Map<string, {
+    brandId: string;
+    brandName: string;
+    deliveredCount: number;
+    deliveredValue: number;
+    returnedCount: number;
+    returnedValue: number;
+  }>();
+
+  for (const o of fullOrdersList) {
+    const val = o.cod_amount_expected !== null && o.cod_amount_expected !== undefined && o.cod_amount_expected > 0
+      ? Number(o.cod_amount_expected)
+      : Number(o.order_total || 0);
+
+    const bId = o.brand_id;
+    const bName = o.brand?.name || "Unknown Brand";
+
+    let existing = settlementBrandMap.get(bId);
+    if (!existing) {
+      existing = {
+        brandId: bId,
+        brandName: bName,
+        deliveredCount: 0,
+        deliveredValue: 0,
+        returnedCount: 0,
+        returnedValue: 0,
+      };
+      settlementBrandMap.set(bId, existing);
+    }
+
+    if (isOrderReturned(o.status)) {
+      existing.returnedCount += 1;
+      existing.returnedValue += val;
+    } else {
+      // Treat as delivered / settled
+      existing.deliveredCount += 1;
+      existing.deliveredValue += val;
+    }
+  }
+
+  const settlementBreakdownRows = Array.from(settlementBrandMap.values()).map((b) => {
+    const kbbPct = brandSettingsQuery.data?.[b.brandId] ?? defaultKbbPct;
+    
+    // Delivered 50% remaining
+    const delivered50Remaining = 0.5 * b.deliveredValue;
+    const kbbCommission = (b.deliveredValue * kbbPct) / 100;
+    
+    // Returned orders: 50% advance previously paid by KBB at dispatch time is clawed back / deducted
+    const returned50Clawback = 0.5 * b.returnedValue;
+    
+    // Net Settlement Payable = (Delivered 50% Remaining) - KBB Commission - Returned 50% Advance
+    const netSettlementPayable = delivered50Remaining - kbbCommission - returned50Clawback;
+
+    return {
+      brandId: b.brandId,
+      brandName: b.brandName,
+      deliveredCount: b.deliveredCount,
+      deliveredValue: b.deliveredValue,
+      delivered50Remaining,
+      kbbPct,
+      kbbCommission,
+      returnedCount: b.returnedCount,
+      returnedValue: b.returnedValue,
+      returned50Clawback,
+      netSettlementPayable,
+    };
+  });
+
+  const totalSettlementDeliveredCount = settlementBreakdownRows.reduce((acc, r) => acc + r.deliveredCount, 0);
+  const totalSettlementDeliveredValue = settlementBreakdownRows.reduce((acc, r) => acc + r.deliveredValue, 0);
+  const totalSettlementDelivered50Remaining = settlementBreakdownRows.reduce((acc, r) => acc + r.delivered50Remaining, 0);
+  const totalSettlementKbbCommission = settlementBreakdownRows.reduce((acc, r) => acc + r.kbbCommission, 0);
+  const totalSettlementReturnedCount = settlementBreakdownRows.reduce((acc, r) => acc + r.returnedCount, 0);
+  const totalSettlementReturnedValue = settlementBreakdownRows.reduce((acc, r) => acc + r.returnedValue, 0);
+  const totalSettlementReturned50Clawback = settlementBreakdownRows.reduce((acc, r) => acc + r.returned50Clawback, 0);
+  const totalNetSettlementPayable = settlementBreakdownRows.reduce((acc, r) => acc + r.netSettlementPayable, 0);
 
   // Metadata labels
   let invoiceNumber = "INV-KBB-GEN";
@@ -180,9 +268,11 @@ export function KbbInvoiceDialog({
   let statusLabelText = "Invoice Generated";
   let issueDate = fmtDate(new Date().toISOString());
 
+  const displayOrderCount = invoiceType === "dispatch_advance" ? totalDispatchOrderCount : (totalSettlementDeliveredCount + totalSettlementReturnedCount);
+
   if (targetShipments.length === 1) {
     const s = targetShipments[0];
-    invoiceNumber = `INV-KBB-${s.code}`;
+    invoiceNumber = invoiceType === "dispatch_advance" ? `INV-DISP-${s.code}` : `INV-SETTLE-${s.code}`;
     shipmentRefLabel = s.code;
     routeLabel = `${s.origin} -> ${s.destination}`;
     carrierLabel = s.shipping_partner || "Carrier N/A";
@@ -190,57 +280,116 @@ export function KbbInvoiceDialog({
     statusLabelText = SHIPMENT_STATUS[s.status]?.label || s.status;
     issueDate = s.dispatched_at ? fmtDate(s.dispatched_at) : fmtDate(s.created_at);
   } else if (targetShipments.length > 1) {
-    invoiceNumber = `INV-KBB-MULTI-${targetShipments.length}`;
+    invoiceNumber = invoiceType === "dispatch_advance" ? `INV-DISP-MULTI-${targetShipments.length}` : `INV-SETTLE-MULTI-${targetShipments.length}`;
     shipmentRefLabel = targetShipments.map((s) => s.code).join(", ");
     routeLabel = "Multi-Shipment (PK -> BD)";
     carrierLabel = "Consolidated Shipments";
     trackingLabel = `${targetShipments.length} Shipments`;
     statusLabelText = "Consolidated Invoice";
   } else if (orderIds && orderIds.length > 0) {
-    invoiceNumber = `INV-KBB-ORD-${orderIds.length}`;
+    invoiceNumber = invoiceType === "dispatch_advance" ? `INV-DISP-ORD-${orderIds.length}` : `INV-SETTLE-ORD-${orderIds.length}`;
     shipmentRefLabel = `${orderIds.length} Custom Orders`;
     routeLabel = "Direct Order Selection";
     carrierLabel = "Order Invoice";
-    trackingLabel = `${totalOrderCount} Orders`;
+    trackingLabel = `${displayOrderCount} Orders`;
     statusLabelText = "Order-based Invoice";
   }
+
+  const saveInvoice = useSaveInvoice();
+  const isLoading = moneySettings.isLoading || brandSettingsQuery.isLoading || shipmentFullOrdersQuery.isLoading;
+
+  useEffect(() => {
+    if (open && !isLoading && displayOrderCount > 0) {
+      const isAdv = invoiceType === "dispatch_advance";
+      const totalVal = isAdv ? totalDispatchValue : (totalSettlementDeliveredValue + totalSettlementReturnedValue);
+      const advAmt = isAdv ? totalDispatchAdvance50 : 0;
+      const netRem = isAdv ? totalDispatchNetRemaining : totalSettlementDelivered50Remaining;
+      const payable = isAdv ? totalDispatchOverallPayable : totalNetSettlementPayable;
+      const brandCnt = fullOrdersByBrand.length;
+
+      saveInvoice.mutate({
+        invoiceNumber,
+        invoiceType,
+        shipmentIds: shipmentIds.length > 0 ? shipmentIds : undefined,
+        orderIds: orderIds && orderIds.length > 0 ? orderIds : undefined,
+        orderCount: displayOrderCount,
+        brandCount: brandCnt,
+        totalValue: totalVal,
+        advanceAmount: advAmt,
+        netRemaining: netRem,
+        payableAmount: payable,
+      });
+    }
+  }, [open, isLoading, invoiceNumber, invoiceType]);
 
   const handlePrint = () => {
     window.print();
   };
 
-  const isLoading = moneySettings.isLoading || brandSettingsQuery.isLoading || shipmentFullOrdersQuery.isLoading;
-
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title={mode === "summary" ? "Invoice Summary" : "Detailed Invoice (2-Page PDF)"}
+      title={
+        invoiceType === "dispatch_advance"
+          ? "50% Dispatch Advance Invoice"
+          : "Final Settlement Invoice (Delivered & Returned)"
+      }
       width="lg"
       footer={
-        <div className="flex w-full items-center justify-between">
-          <div className="flex items-center gap-1 rounded border border-line bg-sunken p-0.5 text-xs no-print">
-            <button
-              type="button"
-              onClick={() => setMode("summary")}
-              className={`flex items-center gap-1 rounded px-2.5 py-1 font-medium transition-colors ${
-                mode === "summary" ? "bg-surface text-ink shadow-xs font-semibold" : "text-muted hover:text-ink"
-              }`}
-            >
-              <Eye className="h-3.5 w-3.5" /> Summary View
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("detail")}
-              className={`flex items-center gap-1 rounded px-2.5 py-1 font-medium transition-colors ${
-                mode === "detail" ? "bg-surface text-ink shadow-xs font-semibold" : "text-muted hover:text-ink"
-              }`}
-            >
-              <FileText className="h-3.5 w-3.5" /> Detailed View (Page 1 & 2)
-            </button>
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          {/* Invoice Type & View Mode Toggles */}
+          <div className="flex flex-wrap items-center gap-2 no-print">
+            {/* Invoice Type Toggle */}
+            <div className="flex items-center gap-1 rounded-lg border border-line bg-sunken p-1 text-xs">
+              <button
+                type="button"
+                onClick={() => setInvoiceType("dispatch_advance")}
+                className={`flex items-center gap-1 rounded px-2.5 py-1 font-medium transition-colors ${
+                  invoiceType === "dispatch_advance"
+                    ? "bg-primary text-primary-fg shadow-xs font-semibold"
+                    : "text-muted hover:text-ink"
+                }`}
+              >
+                <Truck className="h-3.5 w-3.5" /> 50% Dispatch Advance
+              </button>
+              <button
+                type="button"
+                onClick={() => setInvoiceType("final_settlement")}
+                className={`flex items-center gap-1 rounded px-2.5 py-1 font-medium transition-colors ${
+                  invoiceType === "final_settlement"
+                    ? "bg-primary text-primary-fg shadow-xs font-semibold"
+                    : "text-muted hover:text-ink"
+                }`}
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> Final Settlement
+              </button>
+            </div>
+
+            {/* View Mode Toggle */}
+            <div className="flex items-center gap-1 rounded-lg border border-line bg-sunken p-1 text-xs">
+              <button
+                type="button"
+                onClick={() => setMode("summary")}
+                className={`flex items-center gap-1 rounded px-2.5 py-1 font-medium transition-colors ${
+                  mode === "summary" ? "bg-surface text-ink shadow-xs font-semibold" : "text-muted hover:text-ink"
+                }`}
+              >
+                <Eye className="h-3.5 w-3.5" /> Summary
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("detail")}
+                className={`flex items-center gap-1 rounded px-2.5 py-1 font-medium transition-colors ${
+                  mode === "detail" ? "bg-surface text-ink shadow-xs font-semibold" : "text-muted hover:text-ink"
+                }`}
+              >
+                <FileText className="h-3.5 w-3.5" /> Detailed PDF
+              </button>
+            </div>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 ml-auto">
             <Button onClick={onClose}>Close</Button>
             <Button variant="primary" onClick={handlePrint} className="no-print">
               <Printer className="mr-1.5 h-4 w-4" /> Save as PDF / Print
@@ -330,7 +479,7 @@ export function KbbInvoiceDialog({
                 </div>
                 <div className="text-right">
                   <span className="inline-block bg-slate-100 px-3 py-1 text-xs font-bold uppercase tracking-wider text-slate-800 border border-slate-300">
-                    DISPATCH ADVANCE INVOICE
+                    {invoiceType === "dispatch_advance" ? "DISPATCH ADVANCE INVOICE" : "FINAL SETTLEMENT INVOICE"}
                   </span>
                   <p className="mt-2 text-xs text-slate-600">
                     Invoice #: <strong className="text-slate-900">{invoiceNumber}</strong>
@@ -351,7 +500,7 @@ export function KbbInvoiceDialog({
                 <div>
                   <span className="block font-bold uppercase text-slate-500 text-[10px]">Shipment Ref</span>
                   <p className="mt-0.5 font-bold text-slate-900 truncate" title={shipmentRefLabel}>{shipmentRefLabel}</p>
-                  <p className="text-slate-600">{totalOrderCount} Orders</p>
+                  <p className="text-slate-600">{displayOrderCount} Orders</p>
                 </div>
                 <div>
                   <span className="block font-bold uppercase text-slate-500 text-[10px]">Route</span>
@@ -365,157 +514,339 @@ export function KbbInvoiceDialog({
                 </div>
               </div>
 
-              {/* TABLE 1: OVERALL SHIPMENT SUMMARY */}
-              <div className="mb-6 overflow-x-auto">
-                <table className="w-full border-collapse border border-slate-400 text-xs sm:text-sm">
-                  <thead>
-                    <tr>
-                      <th
-                        colSpan={2}
-                        className="border border-slate-400 bg-slate-200 px-4 py-2 text-center font-bold tracking-wider text-slate-900 uppercase"
-                      >
-                        OVERALL SHIPMENT SUMMARY
-                      </th>
-                    </tr>
-                    <tr className="bg-slate-100">
-                      <th className="border border-slate-400 px-4 py-2 text-left font-bold text-slate-800">
-                        Description
-                      </th>
-                      <th className="border border-slate-400 px-4 py-2 text-right font-bold text-slate-800 w-48">
-                        Amount (PKR)
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td className="border border-slate-400 px-4 py-2 text-slate-800">Total Shipment Value</td>
-                      <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                        {fmtNum(totalShipmentValue)}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="border border-slate-400 px-4 py-2 text-slate-800">Total KBB Commission</td>
-                      <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                        {fmtNum(totalKbbCommission)}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="border border-slate-400 px-4 py-2 text-slate-800">50% Payable on Dispatch</td>
-                      <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                        {fmtNum(totalAdvance50)}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="border border-slate-400 px-4 py-2 text-slate-800">
-                        Net Remaining Payable after COD Delivery
-                      </td>
-                      <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                        {fmtNum(totalNetRemaining)}
-                      </td>
-                    </tr>
-                    <tr className="font-bold bg-slate-50">
-                      <td className="border border-slate-400 px-4 py-2.5 text-slate-900 text-sm sm:text-base">
-                        Total Overall Payable by KBB
-                      </td>
-                      <td className="border border-slate-400 px-4 py-2.5 text-right text-slate-900 text-sm sm:text-base">
-                        {fmtNum(totalOverallPayable)}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              {/* ========================================================================= */}
+              {/* MODE 1: DISPATCH ADVANCE INVOICE TABLES */}
+              {/* ========================================================================= */}
+              {invoiceType === "dispatch_advance" ? (
+                <>
+                  {/* TABLE 1: OVERALL SHIPMENT SUMMARY */}
+                  <div className="mb-6 overflow-x-auto">
+                    <table className="w-full border-collapse border border-slate-400 text-xs sm:text-sm">
+                      <thead>
+                        <tr>
+                          <th
+                            colSpan={2}
+                            className="border border-slate-400 bg-slate-200 px-4 py-2 text-center font-bold tracking-wider text-slate-900 uppercase"
+                          >
+                            OVERALL SHIPMENT SUMMARY (50% DISPATCH ADVANCE)
+                          </th>
+                        </tr>
+                        <tr className="bg-slate-100">
+                          <th className="border border-slate-400 px-4 py-2 text-left font-bold text-slate-800">
+                            Description
+                          </th>
+                          <th className="border border-slate-400 px-4 py-2 text-right font-bold text-slate-800 w-48">
+                            Amount (PKR)
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">Total Shipment Value</td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
+                            {fmtNum(totalDispatchValue)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">Total KBB Commission</td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
+                            {fmtNum(totalDispatchKbbCommission)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">50% Advance Payable on Dispatch</td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900 font-bold">
+                            {fmtNum(totalDispatchAdvance50)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">
+                            Net Remaining Payable after COD Delivery
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
+                            {fmtNum(totalDispatchNetRemaining)}
+                          </td>
+                        </tr>
+                        <tr className="font-bold bg-slate-50">
+                          <td className="border border-slate-400 px-4 py-2.5 text-slate-900 text-sm sm:text-base">
+                            Total Overall Payable by KBB
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2.5 text-right text-slate-900 text-sm sm:text-base">
+                            {fmtNum(totalDispatchOverallPayable)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
 
-              {/* TABLE 2: BRAND-WISE BREAKDOWN */}
-              <div className="mb-6 overflow-x-auto">
-                <table className="w-full border-collapse border border-slate-400 text-xs">
-                  <thead>
-                    <tr>
-                      <th
-                        colSpan={8}
-                        className="border border-slate-400 bg-slate-200 px-4 py-2 text-center font-bold tracking-wider text-slate-900 uppercase"
-                      >
-                        BRAND-WISE BREAKDOWN
-                      </th>
-                    </tr>
-                    <tr className="bg-slate-100 text-center font-bold text-slate-800">
-                      <th className="border border-slate-400 px-2.5 py-2 text-left">Brand</th>
-                      <th className="border border-slate-400 px-2.5 py-2 text-center">Total Orders</th>
-                      <th className="border border-slate-400 px-2.5 py-2 text-right">Order Value (PKR)</th>
-                      <th className="border border-slate-400 px-2.5 py-2 text-center">KBB Commission %</th>
-                      <th className="border border-slate-400 px-2.5 py-2 text-right">KBB Commission (PKR)</th>
-                      <th className="border border-slate-400 px-2.5 py-2 text-right">50% Advance on Dispatch (PKR)</th>
-                      <th className="border border-slate-400 px-2.5 py-2 text-right">
-                        Net Remaining Payable after COD (PKR)
-                      </th>
-                      <th className="border border-slate-400 px-2.5 py-2 text-right">
-                        Total Overall Payable by KBB (PKR)
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {brandBreakdownRows.map((row) => (
-                      <tr key={row.brandId}>
-                        <td className="border border-slate-400 px-2.5 py-2 font-medium text-slate-900">
-                          {row.brandName}
-                        </td>
-                        <td className="border border-slate-400 px-2.5 py-2 text-center text-slate-800 font-medium">
-                          {row.orderCount}
-                        </td>
-                        <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
-                          {fmtNum(row.orderValue)}
-                        </td>
-                        <td className="border border-slate-400 px-2.5 py-2 text-center text-slate-800">
-                          {row.kbbPct}%
-                        </td>
-                        <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
-                          {fmtNum(row.kbbCommission)}
-                        </td>
-                        <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
-                          {fmtNum(row.advance50)}
-                        </td>
-                        <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
-                          {fmtNum(row.netRemaining)}
-                        </td>
-                        <td className="border border-slate-400 px-2.5 py-2 text-right font-bold text-slate-900">
-                          {fmtNum(row.totalBrandPayable)}
-                        </td>
-                      </tr>
-                    ))}
-                    <tr className="font-bold bg-slate-100">
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-slate-900">TOTAL</td>
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-center text-slate-900">
-                        {totalOrderCount}
-                      </td>
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                        {fmtNum(totalShipmentValue)}
-                      </td>
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-center text-slate-500">&mdash;</td>
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                        {fmtNum(totalKbbCommission)}
-                      </td>
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                        {fmtNum(totalAdvance50)}
-                      </td>
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                        {fmtNum(totalNetRemaining)}
-                      </td>
-                      <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                        {fmtNum(totalOverallPayable)}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+                  {/* TABLE 2: BRAND-WISE BREAKDOWN */}
+                  <div className="mb-6 overflow-x-auto">
+                    <table className="w-full border-collapse border border-slate-400 text-xs">
+                      <thead>
+                        <tr>
+                          <th
+                            colSpan={8}
+                            className="border border-slate-400 bg-slate-200 px-4 py-2 text-center font-bold tracking-wider text-slate-900 uppercase"
+                          >
+                            BRAND-WISE BREAKDOWN
+                          </th>
+                        </tr>
+                        <tr className="bg-slate-100 text-center font-bold text-slate-800">
+                          <th className="border border-slate-400 px-2.5 py-2 text-left">Brand</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-center">Total Orders</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">Order Value (PKR)</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-center">KBB Commission %</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">KBB Commission (PKR)</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">50% Advance on Dispatch (PKR)</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">
+                            Net Remaining Payable after COD (PKR)
+                          </th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">
+                            Total Overall Payable by KBB (PKR)
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dispatchBreakdownRows.map((row) => (
+                          <tr key={row.brandId}>
+                            <td className="border border-slate-400 px-2.5 py-2 font-medium text-slate-900">
+                              {row.brandName}
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-center text-slate-800 font-medium">
+                              {row.orderCount}
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
+                              {fmtNum(row.orderValue)}
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-center text-slate-800">
+                              {row.kbbPct}%
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
+                              {fmtNum(row.kbbCommission)}
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800 font-bold">
+                              {fmtNum(row.advance50)}
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
+                              {fmtNum(row.netRemaining)}
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-right font-bold text-slate-900">
+                              {fmtNum(row.totalBrandPayable)}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="font-bold bg-slate-100">
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-slate-900">TOTAL</td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-center text-slate-900">
+                            {totalDispatchOrderCount}
+                          </td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalDispatchValue)}
+                          </td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-center text-slate-500">&mdash;</td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalDispatchKbbCommission)}
+                          </td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalDispatchAdvance50)}
+                          </td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalDispatchNetRemaining)}
+                          </td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalDispatchOverallPayable)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
 
-              {/* Payment Terms & Remittance Footnote */}
-              <div className="border-t border-slate-300 pt-4 text-xs text-slate-600">
-                <p className="font-bold text-slate-800">Payment Terms & Remittance Notes:</p>
-                <ul className="mt-1 list-disc pl-4 space-y-0.5 text-slate-600">
-                  <li>50% Advance on Dispatch ({fmtNum(totalAdvance50)} PKR) is payable immediately upon shipment departure.</li>
-                  <li>Net Remaining Payable after COD ({fmtNum(totalNetRemaining)} PKR) is settled upon customer delivery.</li>
-                  <li>Payment Reference: <strong className="text-slate-900">{invoiceNumber}</strong>.</li>
-                </ul>
-              </div>
+                  {/* Payment Terms & Remittance Footnote */}
+                  <div className="border-t border-slate-300 pt-4 text-xs text-slate-600">
+                    <p className="font-bold text-slate-800">Dispatch Payment Terms:</p>
+                    <ul className="mt-1 list-disc pl-4 space-y-0.5 text-slate-600">
+                      <li>50% Advance on Dispatch ({fmtNum(totalDispatchAdvance50)} PKR) is payable immediately upon shipment departure.</li>
+                      <li>Net Remaining Payable after COD ({fmtNum(totalDispatchNetRemaining)} PKR) is settled upon customer delivery.</li>
+                      <li>Payment Reference: <strong className="text-slate-900">{invoiceNumber}</strong>.</li>
+                    </ul>
+                  </div>
+                </>
+              ) : (
+                /* ========================================================================= */
+                /* MODE 2: FINAL SETTLEMENT INVOICE TABLES (DELIVERED & RETURNED) */
+                /* ========================================================================= */
+                <>
+                  {/* TABLE 1: FINAL SETTLEMENT SUMMARY */}
+                  <div className="mb-6 overflow-x-auto">
+                    <table className="w-full border-collapse border border-slate-400 text-xs sm:text-sm">
+                      <thead>
+                        <tr>
+                          <th
+                            colSpan={2}
+                            className="border border-slate-400 bg-slate-200 px-4 py-2 text-center font-bold tracking-wider text-slate-900 uppercase"
+                          >
+                            FINAL SETTLEMENT SUMMARY (DELIVERED & RETURNED ORDERS)
+                          </th>
+                        </tr>
+                        <tr className="bg-slate-100">
+                          <th className="border border-slate-400 px-4 py-2 text-left font-bold text-slate-800">
+                            Description
+                          </th>
+                          <th className="border border-slate-400 px-4 py-2 text-right font-bold text-slate-800 w-48">
+                            Amount (PKR)
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">
+                            Delivered Orders Total Value ({totalSettlementDeliveredCount} Orders)
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
+                            {fmtNum(totalSettlementDeliveredValue)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800 font-medium">
+                            (+) Delivered Orders 50% Remaining Payable
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-bold text-slate-900">
+                            {fmtNum(totalSettlementDelivered50Remaining)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800 text-red-700">
+                            (&minus;) Less KBB Commission on Delivered Orders
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-red-700">
+                            &minus; {fmtNum(totalSettlementKbbCommission)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">
+                            Returned / Failed Orders Total Value ({totalSettlementReturnedCount} Orders)
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
+                            {fmtNum(totalSettlementReturnedValue)}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800 text-red-700">
+                            (&minus;) Less Returned Orders 50% Advance Previously Paid (Clawback)
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-red-700">
+                            &minus; {fmtNum(totalSettlementReturned50Clawback)}
+                          </td>
+                        </tr>
+                        <tr className="font-bold bg-emerald-50 text-slate-900">
+                          <td className="border border-slate-400 px-4 py-2.5 text-sm sm:text-base">
+                            Net Final Settlement Payable by KBB
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2.5 text-right text-sm sm:text-base text-emerald-800">
+                            {fmtNum(totalNetSettlementPayable)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* TABLE 2: BRAND-WISE FINAL SETTLEMENT BREAKDOWN */}
+                  <div className="mb-6 overflow-x-auto">
+                    <table className="w-full border-collapse border border-slate-400 text-xs">
+                      <thead>
+                        <tr>
+                          <th
+                            colSpan={9}
+                            className="border border-slate-400 bg-slate-200 px-4 py-2 text-center font-bold tracking-wider text-slate-900 uppercase"
+                          >
+                            BRAND-WISE FINAL SETTLEMENT BREAKDOWN
+                          </th>
+                        </tr>
+                        <tr className="bg-slate-100 text-center font-bold text-slate-800">
+                          <th className="border border-slate-400 px-2 py-2 text-left">Brand</th>
+                          <th className="border border-slate-400 px-2 py-2 text-center">Delivered Orders</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">Delivered Value (PKR)</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">50% Remaining (PKR)</th>
+                          <th className="border border-slate-400 px-2 py-2 text-center">KBB Comm %</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">KBB Comm (PKR)</th>
+                          <th className="border border-slate-400 px-2 py-2 text-center">Returned Orders</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">Returned 50% Advance Clawback (PKR)</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">Net Settlement Payable (PKR)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {settlementBreakdownRows.map((row) => (
+                          <tr key={row.brandId}>
+                            <td className="border border-slate-400 px-2 py-2 font-medium text-slate-900">
+                              {row.brandName}
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-center text-slate-800 font-medium">
+                              {row.deliveredCount}
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-right text-slate-800">
+                              {fmtNum(row.deliveredValue)}
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-right font-medium text-slate-900">
+                              {fmtNum(row.delivered50Remaining)}
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-center text-slate-800">
+                              {row.kbbPct}%
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-right text-red-700">
+                              &minus;{fmtNum(row.kbbCommission)}
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-center text-slate-800 font-medium">
+                              {row.returnedCount}
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-right text-red-700">
+                              &minus;{fmtNum(row.returned50Clawback)}
+                            </td>
+                            <td className="border border-slate-400 px-2 py-2 text-right font-bold text-slate-900">
+                              {fmtNum(row.netSettlementPayable)}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="font-bold bg-slate-100">
+                          <td className="border border-slate-400 px-2 py-2.5 text-slate-900">TOTAL</td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-center text-slate-900">
+                            {totalSettlementDeliveredCount}
+                          </td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalSettlementDeliveredValue)}
+                          </td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalSettlementDelivered50Remaining)}
+                          </td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-center text-slate-500">&mdash;</td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-right text-red-700">
+                            &minus;{fmtNum(totalSettlementKbbCommission)}
+                          </td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-center text-slate-900">
+                            {totalSettlementReturnedCount}
+                          </td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-right text-red-700">
+                            &minus;{fmtNum(totalSettlementReturned50Clawback)}
+                          </td>
+                          <td className="border border-slate-400 px-2 py-2.5 text-right text-slate-900">
+                            {fmtNum(totalNetSettlementPayable)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Payment Terms & Remittance Footnote */}
+                  <div className="border-t border-slate-300 pt-4 text-xs text-slate-600">
+                    <p className="font-bold text-slate-800">Final Settlement Accounting Notes:</p>
+                    <ul className="mt-1 list-disc pl-4 space-y-0.5 text-slate-600">
+                      <li>Remaining 50% ({fmtNum(totalSettlementDelivered50Remaining)} PKR) is collectible for Delivered orders.</li>
+                      <li>KBB Commission ({fmtNum(totalSettlementKbbCommission)} PKR) is deducted from Delivered order earnings.</li>
+                      <li>Returned orders 50% advance previously paid at dispatch ({fmtNum(totalSettlementReturned50Clawback)} PKR) is clawed back.</li>
+                      <li>Net Final Amount Payable by KBB: <strong className="text-slate-900">{fmtNum(totalNetSettlementPayable)} PKR</strong>.</li>
+                    </ul>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* ==================== PAGE 2: BRAND-BY-BRAND ITEM BREAKDOWN ==================== */}
@@ -525,10 +856,10 @@ export function KbbInvoiceDialog({
                 <div className="flex items-start justify-between border-b border-slate-300 pb-4 mb-6">
                   <div>
                     <h2 className="text-xl font-bold tracking-tight text-slate-900">
-                      Shipment Itemized Product Breakdown
+                      {invoiceType === "dispatch_advance" ? "Shipment Itemized Product Breakdown" : "Final Settlement Itemized Breakdown"}
                     </h2>
                     <p className="mt-0.5 text-xs text-slate-600">
-                      Detailed Product & SKU Breakdown Grouped by Brand
+                      Detailed Product & SKU Breakdown Grouped by Brand ({invoiceType === "dispatch_advance" ? "Dispatch Mode" : "Final Settlement Mode"})
                     </p>
                   </div>
                   <div className="text-right text-xs text-slate-600">
@@ -546,11 +877,14 @@ export function KbbInvoiceDialog({
 
                     const brandRows = brandGroup.orders.flatMap((order) => {
                       const items = order.order_items || [];
+                      const isReturned = isOrderReturned(order.status);
                       if (!items.length) {
                         const val = order.cod_amount_expected || order.order_total || 0;
                         brandItemTotalSum += Number(val);
                         return [{
                           orderNumber: order.order_number,
+                          status: order.status,
+                          isReturned,
                           productName: "Order Total (No itemized SKUs)",
                           sku: "—",
                           variant: "—",
@@ -567,6 +901,8 @@ export function KbbInvoiceDialog({
                         brandItemTotalSum += subtotal;
                         return {
                           orderNumber: order.order_number,
+                          status: order.status,
+                          isReturned,
                           productName: item.product_name,
                           sku: item.sku || "—",
                           variant: item.variant || "—",
@@ -602,19 +938,31 @@ export function KbbInvoiceDialog({
                             <thead>
                               <tr className="bg-slate-50 font-bold text-slate-800 text-center">
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-left w-24">Order #</th>
+                                <th className="border border-slate-300 px-2.5 py-1.5 text-center w-24">Status</th>
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-left">Product Name</th>
-                                <th className="border border-slate-300 px-2.5 py-1.5 text-left w-28">SKU</th>
-                                <th className="border border-slate-300 px-2.5 py-1.5 text-left w-24">Variant</th>
+                                <th className="border border-slate-300 px-2.5 py-1.5 text-left w-24">SKU</th>
+                                <th className="border border-slate-300 px-2.5 py-1.5 text-left w-20">Variant</th>
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-right w-24">Price (PKR)</th>
-                                <th className="border border-slate-300 px-2.5 py-1.5 text-center w-16">Qty</th>
+                                <th className="border border-slate-300 px-2.5 py-1.5 text-center w-14">Qty</th>
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-right w-28">Subtotal (PKR)</th>
                               </tr>
                             </thead>
                             <tbody>
                               {brandRows.map((row, idx) => (
-                                <tr key={idx} className="hover:bg-slate-50/50">
+                                <tr key={idx} className={`hover:bg-slate-50/50 ${row.isReturned ? "bg-red-50/40" : ""}`}>
                                   <td className="border border-slate-300 px-2.5 py-1.5 font-medium text-slate-900">
                                     {row.orderNumber}
+                                  </td>
+                                  <td className="border border-slate-300 px-2.5 py-1.5 text-center">
+                                    <span
+                                      className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                        row.isReturned
+                                          ? "bg-red-100 text-red-800"
+                                          : "bg-emerald-100 text-emerald-800"
+                                      }`}
+                                    >
+                                      {STATUS[row.status as OrderStatus]?.label || row.status}
+                                    </span>
                                   </td>
                                   <td className="border border-slate-300 px-2.5 py-1.5 text-slate-800 font-medium">
                                     {row.productName}
@@ -639,7 +987,7 @@ export function KbbInvoiceDialog({
                             </tbody>
                             <tfoot>
                               <tr className="bg-slate-100 font-bold text-slate-900">
-                                <td colSpan={5} className="border border-slate-300 px-2.5 py-2 text-right">
+                                <td colSpan={6} className="border border-slate-300 px-2.5 py-2 text-right">
                                   {brandGroup.brandName} Total:
                                 </td>
                                 <td className="border border-slate-300 px-2.5 py-2 text-center text-slate-900">

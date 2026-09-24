@@ -1,9 +1,9 @@
 import { Link } from "react-router-dom";
 import { CheckCircle2 } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
-import { useAgeing, useDashboardCounts, useRecentActivity, useStatusCounts } from "@/hooks/useData";
-import { CONFIRM_QUEUE, DELIVERY_QUEUE, GROUP_CLASSES, ORDER_VIEWS, STATUS } from "@/lib/status";
-import { fmtDateTime, since } from "@/lib/format";
+import { useAgeing, useDashboardCounts, useInvoicesList, useStatusCounts } from "@/hooks/useData";
+import { CONFIRM_QUEUE, DELIVERY_QUEUE, GROUP_CLASSES, ORDER_VIEWS, STATUS, V360_STATUS_TRACK } from "@/lib/status";
+import { since } from "@/lib/format";
 import type { OrderStatus } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -45,28 +45,17 @@ function Ageing({ statuses, title }: { statuses?: OrderStatus[]; title: string }
   );
 }
 
-function Activity() {
-  const q = useRecentActivity(12);
+function Payments() {
+  const q = useInvoicesList();
+  const rows: { payment_status?: string | null }[] = q.data ?? [];
+  const paid = rows.filter((r) => r.payment_status === "paid").length;
+  const unpaid = rows.filter((r) => r.payment_status === "not_paid").length;
+  const unpaidInvoices = rows.filter((r) => r.payment_status !== "paid").length;
   return (
-    <section className="panel">
-      <div className="flex items-center justify-between border-b border-line px-4 py-3"><h2>Latest activity</h2></div>
-      {q.isLoading ? <Spinner /> : q.isError ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : q.data!.length === 0 ? (
-        <EmptyState title="No activity yet" />
-      ) : (
-        <ul className="divide-y divide-line">
-          {q.data!.map((e) => (
-            <li key={e.id}>
-              <Link to={`/orders/${e.order_id}`} className="block px-4 py-2.5 hover:bg-sunken/60">
-                <div className="text-[13.5px]">
-                  <span className="font-medium">{e.order?.order_number}</span>{" "}
-                  <span className="text-muted">{e.action === "Status changed" && e.to_status ? STATUS[e.to_status]?.label ?? e.to_status : e.action}</span>
-                </div>
-                <div className="text-[12.5px] text-faint">{e.actor_label ?? "System"}, {fmtDateTime(e.created_at)}</div>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
+    <section className="grid gap-3 sm:grid-cols-3">
+      <Tile label="Paid" value={q.isLoading ? undefined : paid} to="/invoices" sub="Fully paid invoices" />
+      <Tile label="Unpaid" value={q.isLoading ? undefined : unpaid} to="/invoices" sub="No payment received" />
+      <Tile label="Unpaid invoices" value={q.isLoading ? undefined : unpaidInvoices} to="/invoices" sub="Any outstanding balance" />
     </section>
   );
 }
@@ -92,14 +81,13 @@ export function Dashboard() {
         </div>
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
           <Ageing title="Waiting too long" statuses={[...CONFIRM_QUEUE, ...DELIVERY_QUEUE]} />
-          <Activity />
         </div>
       </>
     );
   }
 
   const views = ORDER_VIEWS.filter((v) => v.key !== "all" && v.key !== "cancelled");
-  const allStatuses = Object.keys(STATUS) as OrderStatus[];
+  const track = V360_STATUS_TRACK;
   return (
     <>
       <PageHeader title="Dashboard" description="Every brand's Bangladesh orders, live." />
@@ -108,14 +96,14 @@ export function Dashboard() {
           <Tile key={v.key} label={v.label} value={sum(v.statuses)} to={`/orders?view=${v.key}`} tone={v.key === "problem" ? "problem" : undefined} />
         ))}
       </div>
-      <h2 className="mb-3 mt-7">Orders by status</h2>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
-        {allStatuses.map((s) => {
-          const n = c ? (c[s] ?? 0) : undefined;
+      <h2 className="mb-3 mt-7">Master status</h2>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+        {track.map((step) => {
+          const n = c ? (c[step.status] ?? 0) : undefined;
           return (
-            <Link key={s} to={`/orders?view=${s}`} className="flex items-center gap-2 rounded border border-line px-2.5 py-2 hover:border-faint">
-              <span className={`h-2 w-2 shrink-0 rounded-full ${GROUP_CLASSES[STATUS[s].group].dot}`} aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-[13px]">{STATUS[s].label}</span>
+            <Link key={step.status} to={`/orders?view=${step.status}`} className="flex items-center gap-2 rounded border border-line px-2.5 py-2 hover:border-faint">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS[step.status] ? GROUP_CLASSES[STATUS[step.status].group].dot : "bg-faint"}`} aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-[13px]">{step.label}</span>
               <span className={`text-[14px] font-semibold ${n === undefined ? "text-faint" : n > 0 ? "text-ink" : "text-faint"}`}>{n ?? "–"}</span>
             </Link>
           );
@@ -129,9 +117,10 @@ export function Dashboard() {
         <Tile label="Brand requests" value={d?.pendingBrands} to="/brands" tone="attention" sub="Waiting for approval" />
         <Tile label="Shopify sync errors" value={d?.failedWebhooks} to="/webhooks" tone="problem" sub="Orders that failed to import" />
       </div>
+      <h2 className="mb-3 mt-7">Payments</h2>
+      <Payments />
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Ageing title="Stuck orders" />
-        <Activity />
       </div>
     </>
   );

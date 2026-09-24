@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Inbox, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Inbox, Search, StickyNote, X } from "lucide-react";
 import { PAGE_SIZE, useBrandOptions, useOrderList, useStatusCounts } from "@/hooks/useData";
 import { ORDER_VIEWS, STATUS, type StatusGroup } from "@/lib/status";
 import { fmtMoney, fmtShort, since } from "@/lib/format";
@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
+import { CheckNotesModal } from "@/components/CheckNotesModal";
 
 function useDebounced<T>(value: T, ms = 300) {
   const [v, setV] = useState(value);
@@ -16,18 +17,14 @@ function useDebounced<T>(value: T, ms = 300) {
   return v;
 }
 
-function invoicePaymentPill(o: OrderOverview): { label: string; group: StatusGroup } | null {
-  if (!o.shipment_id) return null;
-  const status = o.shipment_invoice_payment_status || "not_paid";
-  switch (status) {
-    case "paid":
-      return { label: "Paid", group: "done" };
-    case "partially_paid":
-      return { label: "Partially paid", group: "kbb" };
-    case "not_paid":
-    default:
-      return { label: "Unpaid", group: "problem" };
+export function orderPaymentStatusPill(o: OrderOverview): { label: string; group: StatusGroup } {
+  if (o.invoice_payment_status === "paid") {
+    return { label: "Paid", group: "done" };
   }
+  if (o.invoice_payment_status === "partially_paid" || o.shipment_invoice_payment_status === "paid") {
+    return { label: "Partially paid", group: "kbb" };
+  }
+  return { label: "Unpaid", group: "problem" };
 }
 
 export function where(o: OrderOverview): string {
@@ -43,10 +40,10 @@ export function fulfilmentStatus(o: OrderOverview): { label: string; group: Stat
     case "confirmation_pending":
     case "customer_unreachable":
     case "needs_amendment":
-      return { label: "New", group: "kbb" };
     case "brand_confirmed":
-    case "confirmed":
     case "brand_preparing":
+      return { label: "New", group: "kbb" };
+    case "confirmed":
     case "dispatched_to_hub":
     case "received_at_hub":
     case "ready_for_shipment":
@@ -87,8 +84,9 @@ export function brandStatus(o: OrderOverview): { label: string; group: StatusGro
       return { label: "Needs amendment", group: "brand" };
     case "brand_confirmed":
       return { label: "Brand confirmed", group: "brand" };
-    case "confirmed":
     case "brand_preparing":
+      return { label: "Brand preparing", group: "brand" };
+    case "confirmed":
     case "dispatched_to_hub":
     case "received_at_hub":
     case "ready_for_shipment":
@@ -116,8 +114,14 @@ export function brandStatus(o: OrderOverview): { label: string; group: StatusGro
 }
 
 export function masterStatus(o: OrderOverview): { label: string; group: StatusGroup } {
+  if (o.status === "new" || o.status === "confirmation_pending" || o.status === "customer_unreachable") {
+    return { label: "New", group: "kbb" };
+  }
+  if (o.status === "brand_confirmed") {
+    return { label: "Brand confirmed", group: "brand" };
+  }
   if (o.status === "confirmed") {
-    return { label: "Fulfilment verified", group: "kbb" };
+    return { label: "Order confirmed", group: "kbb" };
   }
   const s = STATUS[o.status];
   return { label: s?.label ?? o.status, group: s?.group ?? "closed" };
@@ -126,6 +130,7 @@ export function masterStatus(o: OrderOverview): { label: string; group: StatusGr
 export function Orders() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
+  const [notesOrder, setNotesOrder] = useState<OrderOverview | null>(null);
   const viewKey = params.get("view") ?? "all";
   const isStatusFilter = viewKey !== "all" && !ORDER_VIEWS.some((v) => v.key === viewKey) && viewKey in STATUS;
   const statusFilter: OrderStatus | null = isStatusFilter ? (viewKey as OrderStatus) : null;
@@ -203,17 +208,18 @@ export function Orders() {
                 <th>Date</th>
                 <th>Customer</th>
                 <th className="text-right">COD</th>
-                <th>Invoice</th>
                 <th>Fulfilment status</th>
                 <th>Brand status</th>
                 <th>Master status</th>
+                <th>Notes</th>
+                <th>Payment status</th>
                 <th>Where</th>
+                <th>Actions</th>
               </tr>
             </thead>
-            {q.isLoading ? <SkeletonRows cols={10} /> : (
+            {q.isLoading ? <SkeletonRows cols={12} /> : (
               <tbody className={`table-body ${q.isFetching ? "opacity-70" : ""}`}>
                 {rows.map((o) => {
-                  const invPill = invoicePaymentPill(o);
                   return (
                     <tr key={o.id} onClick={() => navigate(`/orders/${o.id}`)} className="cursor-pointer hover:bg-sunken/50">
                       <td><Link to={`/orders/${o.id}`} onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline">{o.order_number}</Link>
@@ -222,13 +228,6 @@ export function Orders() {
                       <td className="whitespace-nowrap text-muted">{fmtShort(o.order_date)}</td>
                       <td><div className="max-w-[200px] truncate">{o.customer_name ?? "—"}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>
                       <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>
-                      <td>
-                        {invPill ? (
-                          <Pill {...invPill} />
-                        ) : (
-                          <span className="text-[12px] text-faint">—</span>
-                        )}
-                      </td>
                       <td><Pill {...fulfilmentStatus(o)} /></td>
                       <td><Pill {...brandStatus(o)} /></td>
                       <td>
@@ -237,7 +236,12 @@ export function Orders() {
                           <span className="text-[12.5px] text-muted">{since(o.status_changed_at || o.order_date)}</span>
                         </div>
                       </td>
+                      <td>{o.has_note ? <span title="Has notes"><StickyNote className="h-4 w-4 text-muted" aria-label="Has notes" /></span> : null}</td>
+                      <td><Pill {...orderPaymentStatusPill(o)} /></td>
                       <td className="max-w-[180px] truncate text-muted">{where(o)}</td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <Button size="sm" variant="ghost" onClick={() => setNotesOrder(o)}>Check notes</Button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -259,6 +263,15 @@ export function Orders() {
           </div>
         )}
       </div>
+
+      {notesOrder && (
+        <CheckNotesModal
+          orderId={notesOrder.id}
+          orderNumber={notesOrder.order_number}
+          open
+          onClose={() => setNotesOrder(null)}
+        />
+      )}
     </>
   );
 }

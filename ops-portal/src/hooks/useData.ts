@@ -3,8 +3,8 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { describeError, describeFunctionError } from "@/lib/errors";
 import type {
-  BrandMoneySettings, BrandPayable, BrandRow, FxRate, InboundBatchAdmin, InvoicePaymentStatus, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
-  OrderEvent, OrderItem, OrderMessage, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
+  BrandMoneySettings, BrandPayable, BrandRow, FxRate, InboundBatchAdmin, InvoicePaymentStatus, InvoiceRecord, InvoiceType, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
+  OrderEvent, OrderInternalNote, OrderItem, OrderMessage, OrderNoteRole, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
   ShipmentEvent, ShipmentOverview, ShipmentStatus, StatusTransition, TeamMember, WebhookEvent,
 } from "@/lib/types";
 
@@ -52,6 +52,23 @@ export function useOrderList(f: OrderQuery) {
       const { data, error, count } = await q.range(start, start + size - 1);
       if (error) throw error;
       return { rows: (data ?? []) as OrderOverview[], total: count ?? 0 };
+    },
+  });
+}
+
+export function useOrderItems(orderId: string | null) {
+  return useQuery({
+    queryKey: k("order-items", orderId),
+    enabled: !!orderId,
+    staleTime: 5 * 60 * 1000,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("order_items")
+        .select("product_name, sku, quantity")
+        .eq("order_id", orderId!)
+        .order("product_name");
+      if (error) throw error;
+      return (data ?? []) as Pick<OrderItem, "product_name" | "sku" | "quantity">[];
     },
   });
 }
@@ -166,6 +183,52 @@ export function useBatchOrders(batchId: string | null) {
       const { data, error } = await supabase.from("orders").select("*, order_items(*)").eq("inbound_batch_id", batchId!).order("order_number");
       if (error) throw error;
       return (data ?? []) as OrderWithItems[];
+    },
+  });
+}
+
+export type OrderWithItemsForBd = Order & { order_items: OrderItem[] };
+
+export function useShipmentOrdersWithItems(shipmentId: string | null) {
+  return useQuery({
+    queryKey: k("shipment-orders-items", shipmentId),
+    enabled: !!shipmentId,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("*, order_items(*)")
+        .eq("shipment_id", shipmentId!)
+        .order("order_number");
+      if (error) throw error;
+      const rows = (data ?? []) as OrderWithItemsForBd[];
+      rows.forEach((o) => o.order_items.sort((a, b) => a.product_name.localeCompare(b.product_name)));
+      return rows;
+    },
+  });
+}
+
+export interface BdReceivedItem {
+  id: string;
+  shipment_id: string;
+  order_id: string;
+  order_item_id: string;
+  expected_qty: number;
+  received_qty: number;
+  note: string | null;
+  checked_at: string;
+}
+
+export function useBdReceivedItems(shipmentId: string | null) {
+  return useQuery({
+    queryKey: k("bd-received", shipmentId),
+    enabled: !!shipmentId,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("bd_received_items")
+        .select("*")
+        .eq("shipment_id", shipmentId!);
+      if (error) throw error;
+      return (data ?? []) as BdReceivedItem[];
     },
   });
 }
@@ -445,6 +508,127 @@ export const useShipmentStatus = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; to: ShipmentStatus; note?: string }) => rpc("set_shipment_status", { p_shipment_id: v.id, p_to: v.to, p_note: trimOrNull(v.note) }),
   "Shipment updated: orders inside updated too", o);
 
+export const useBdSaveOrderReceiving = (o?: ActionOptions) => useOpsAction(
+  (v: { shipmentId: string; orderId: string; items: { order_item_id: string; received_qty: number; note: string }[] }) =>
+    rpc("bd_save_order_receiving", { p_shipment_id: v.shipmentId, p_order_id: v.orderId, p_items: v.items }),
+  "Order receiving saved", o);
+
+export const useBdConfirmReceiving = (o?: ActionOptions) => useOpsAction(
+  (v: { shipmentId: string; override?: boolean }) =>
+    rpc("bd_confirm_shipment_receiving", { p_shipment_id: v.shipmentId, p_override: v.override ?? false }),
+  "Shipment received — orders updated", o);
+
+export interface BdDiscrepancy {
+  id: string;
+  shipment_id: string;
+  order_id: string;
+  order_item_id: string;
+  expected_qty: number;
+  received_qty: number;
+  difference: number;
+  note: string | null;
+  checked_at: string;
+  shipment_code: string;
+  order_number: string;
+  order_status: string;
+  product_name: string;
+  sku: string | null;
+  variant: string | null;
+}
+
+export function useBdDiscrepancies() {
+  return useQuery({
+    queryKey: k("bd-discrepancies"),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("bd_discrepancies")
+        .select("*")
+        .order("checked_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as BdDiscrepancy[];
+    },
+  });
+}
+
+export function useBdDiscrepancyCount() {
+  return useQuery({
+    queryKey: k("bd-discrepancy-count"),
+    staleTime: 60_000,
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("bd_discrepancies")
+        .select("*", { count: "exact", head: true });
+      if (error) throw error;
+      return count ?? 0;
+    },
+  });
+}
+
+export interface RestockedItem {
+  order_item_id: string;
+  order_id: string;
+  order_number: string;
+  order_date: string;
+  status: string;
+  returned_at: string;
+  brand_id: string;
+  brand_name: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  city: string | null;
+  province: string | null;
+  order_total: number;
+  currency: string;
+  delivered_at: string | null;
+  delivery_courier: string | null;
+  delivery_tracking_number: string | null;
+  failure_reason: string | null;
+  return_disposition: string;
+  restocked_at: string | null;
+  restock_note: string | null;
+  shipment_id: string | null;
+  shipment_code: string | null;
+  product_name: string;
+  sku: string | null;
+  variant: string | null;
+  quantity: number;
+  unit_price: number;
+  discount: number;
+  line_total: number;
+}
+
+export function useRestockedItems() {
+  return useQuery({
+    queryKey: k("bd-restocked-items"),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("bd_restocked_items")
+        .select("*")
+        .order("returned_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as RestockedItem[];
+    },
+  });
+}
+
+export const useBulkSetShipmentStatus = (o?: ActionOptions) => useOpsAction(
+  async (v: { ids: string[]; to: ShipmentStatus; note?: string }) => {
+    const results = await Promise.allSettled(
+      v.ids.map((id) =>
+        rpc("set_shipment_status", {
+          p_shipment_id: id,
+          p_to: v.to,
+          p_note: trimOrNull(v.note),
+        })
+      )
+    );
+    const errors = results.filter((r) => r.status === "rejected");
+    if (errors.length > 0) {
+      throw (errors[0] as PromiseRejectedResult).reason;
+    }
+  },
+  "Shipments dispatched", o);
+
 export const useSetTracking = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; courier: string; tracking: string }) => rpc("set_delivery_tracking", { p_order_id: v.id, p_courier: v.courier.trim(), p_tracking_number: v.tracking.trim() }),
   "Delivery tracking saved", o);
@@ -454,8 +638,8 @@ export const useMarkDelivered = (o?: ActionOptions) => useOpsAction(
   "Marked as delivered", o);
 
 export const useReturnDisposition = (o?: ActionOptions) => useOpsAction(
-  (v: { id: string; disposition: ReturnDispositionValue; note?: string }) =>
-    rpc("set_return_disposition", { p_order_id: v.id, p_disposition: v.disposition, p_note: trimOrNull(v.note) }),
+  (v: { id: string; items: { order_item_id: string; disposition: ReturnDispositionValue }[]; note?: string }) =>
+    rpc("set_return_disposition", { p_order_id: v.id, p_items: v.items, p_note: trimOrNull(v.note) }),
   "Return decision saved", o);
 
 export interface ApproveBrandParams {
@@ -672,6 +856,45 @@ export function useOrderMessages(orderId: string) {
   });
 }
 
+export function useOrderInternalNote(orderId: string, role: OrderNoteRole) {
+  return useQuery({
+    queryKey: k("internal-note", orderId, role),
+    enabled: !!orderId,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("order_internal_notes")
+        .select("order_id, role, note, updated_at, updated_by")
+        .eq("order_id", orderId)
+        .eq("role", role)
+        .maybeSingle();
+      if (error) throw error;
+      return (data ?? null) as OrderInternalNote | null;
+    },
+  });
+}
+
+export function useSaveOrderInternalNote(orderId: string, role: OrderNoteRole, o?: ActionOptions) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (note: string) => {
+      const { data: user } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from("order_internal_notes")
+        .upsert({
+          order_id: orderId,
+          role,
+          note,
+          updated_at: new Date().toISOString(),
+          updated_by: user.user?.id ?? null,
+        });
+      if (error) throw error;
+    },
+    onSuccess: () => { toast.success("Note saved"); },
+    onError: (e) => { if (!o?.inlineErrors) toast.error(describeError(e)); },
+    onSettled: () => qc.invalidateQueries({ queryKey: k("internal-note", orderId, role) }),
+  });
+}
+
 export function useSendMessage(o?: ActionOptions) {
   return useOpsAction(
     async (v: { orderId: string; body: string }) => {
@@ -693,3 +916,83 @@ export function useMarkMessagesRead(orderId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: k("messages", orderId) }),
   });
 }
+
+export function useInvoicesList() {
+  return useQuery({
+    queryKey: k("invoices"),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("invoices")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) return [] as InvoiceRecord[];
+      return (data ?? []) as InvoiceRecord[];
+    },
+  });
+}
+
+export function useSaveInvoice(o?: { onSuccess?: () => void }) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (v: {
+      invoiceNumber: string;
+      invoiceType: InvoiceType;
+      shipmentIds?: string[];
+      orderIds?: string[];
+      orderCount: number;
+      brandCount: number;
+      totalValue: number;
+      advanceAmount: number;
+      netRemaining: number;
+      payableAmount: number;
+    }) => {
+      const { data, error } = await supabase.rpc("save_generated_invoice", {
+        p_invoice_number: v.invoiceNumber,
+        p_invoice_type: v.invoiceType,
+        p_shipment_ids: v.shipmentIds || null,
+        p_order_ids: v.orderIds || null,
+        p_order_count: v.orderCount,
+        p_brand_count: v.brandCount,
+        p_total_value: v.totalValue,
+        p_advance_amount: v.advanceAmount,
+        p_net_remaining: v.netRemaining,
+        p_payable_amount: v.payableAmount,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+      qc.invalidateQueries({ queryKey: ["shipments"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      if (o?.onSuccess) o.onSuccess();
+    },
+  });
+}
+
+export function useSetInvoicePaymentStatus(o?: { onSuccess?: () => void }) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (v: { invoiceNumber: string; status: InvoicePaymentStatus }) => {
+      const { error } = await supabase.rpc("set_invoice_payment_status", {
+        p_invoice_number: v.invoiceNumber,
+        p_status: v.status,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["invoices"] });
+      qc.invalidateQueries({ queryKey: ["shipments"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      toast.success("Payment status updated successfully");
+      if (o?.onSuccess) o.onSuccess();
+    },
+    onError: (err) => {
+      toast.error(`Failed to update payment status: ${err.message}`);
+    },
+  });
+}
+
+
+
+

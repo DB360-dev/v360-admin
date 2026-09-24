@@ -1,23 +1,22 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { Eye, Filter, Plus, Printer, Search } from "lucide-react";
-import { useShipments, useUpdateInvoicePaymentStatus } from "@/hooks/useData";
-import { SHIPMENT_STATUS } from "@/lib/status";
-import { fmtDate, fmtMoney, plural } from "@/lib/format";
-import type { InvoicePaymentStatus, ShipmentOverview, ShipmentStatus as ShipmentStatusType } from "@/lib/types";
+import { Eye, Filter, Pencil, Plus, Printer, RefreshCw, Search, Truck } from "lucide-react";
+import { useOps } from "@/context/OpsContext";
+import { useInvoicesList, useShipments } from "@/hooks/useData";
+import { fmtDate, fmtMoney } from "@/lib/format";
+import type { InvoicePaymentStatus, ShipmentOverview } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Pill } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
-import { EmptyState, ErrorState, Spinner } from "@/components/ui/States";
-import { KbbInvoiceDialog } from "@/components/KbbInvoiceDialog";
+import { Spinner } from "@/components/ui/States";
+import { KbbInvoiceDialog, type InvoiceType } from "@/components/KbbInvoiceDialog";
 import { GenerateInvoiceModal } from "@/components/GenerateInvoiceModal";
+import { EditPaymentStatusModal } from "@/components/EditPaymentStatusModal";
 
 export function Invoices() {
+  const { isV360 } = useOps();
   const shipmentsQuery = useShipments("all");
-  const updatePaymentStatus = useUpdateInvoicePaymentStatus();
+  const invoicesQuery = useInvoicesList();
   
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [paymentFilter, setPaymentFilter] = useState<string>("all");
   
   // Single/Multi shipment or custom order selection state for invoice modal
@@ -26,51 +25,115 @@ export function Invoices() {
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[] | undefined>(undefined);
 
   const [modalMode, setModalMode] = useState<"summary" | "detail">("summary");
+  const [targetInvoiceType, setTargetInvoiceType] = useState<InvoiceType>("dispatch_advance");
   const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
   const [generatorModalOpen, setGeneratorModalOpen] = useState(false);
 
-  const shipments = shipmentsQuery.data ?? [];
+  // Edit payment status modal state
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editInvoiceNum, setEditInvoiceNum] = useState("");
+  const [editInvoiceStatus, setEditInvoiceStatus] = useState<InvoicePaymentStatus>("not_paid");
 
-  // Filtered shipments
-  const filtered = useMemo(() => {
-    return shipments.filter((s) => {
-      const q = search.trim().toLowerCase();
+  const shipments = shipmentsQuery.data ?? [];
+  const savedInvoices = invoicesQuery.data ?? [];
+
+  // Filtered 50% Dispatch Advance Invoices
+  const dispatchInvoices = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    
+    // Saved invoices of type dispatch_advance
+    const savedDispatch = savedInvoices.filter((inv) => inv.invoice_type === "dispatch_advance");
+    const savedInvNums = new Set(savedDispatch.map((i) => i.invoice_number));
+
+    // Fallback shipments not explicitly saved yet
+    const fallbackList = shipments
+      .filter((s) => !savedInvNums.has(`INV-DISP-${s.code}`))
+      .map((s) => ({
+        id: s.id,
+        invoice_number: `INV-DISP-${s.code}`,
+        invoice_type: "dispatch_advance" as InvoiceType,
+        shipment_ids: [s.id],
+        order_ids: null,
+        order_count: s.order_count,
+        brand_count: s.brand_count,
+        total_value: s.cod_expected || 0,
+        advance_amount: 0.5 * (s.cod_expected || 0),
+        net_remaining: 0.5 * (s.cod_expected || 0) - (s.cod_expected || 0) * 0.08,
+        payable_amount: 0.5 * (s.cod_expected || 0) + (0.5 * (s.cod_expected || 0) - (s.cod_expected || 0) * 0.08),
+        payment_status: s.invoice_payment_status || "not_paid",
+        notes: null,
+        created_at: s.dispatched_at || s.created_at,
+        updated_at: s.created_at,
+        shipmentRef: s.code,
+        shipmentObj: s,
+      }));
+
+    const allDispatch = [
+      ...savedDispatch.map((inv) => ({
+        ...inv,
+        shipmentRef: inv.invoice_number.replace("INV-DISP-", ""),
+        shipmentObj: shipments.find((s) => inv.shipment_ids?.includes(s.id)),
+      })),
+      ...fallbackList,
+    ];
+
+    return allDispatch.filter((inv) => {
       const matchSearch =
         !q ||
-        s.code.toLowerCase().includes(q) ||
-        `inv-kbb-${s.code}`.toLowerCase().includes(q) ||
-        (s.shipping_partner && s.shipping_partner.toLowerCase().includes(q)) ||
-        (s.tracking_number && s.tracking_number.toLowerCase().includes(q));
-
-      const matchStatus = statusFilter === "all" || s.status === statusFilter;
-      const currentPayStatus = s.invoice_payment_status || "not_paid";
-      const matchPayment = paymentFilter === "all" || currentPayStatus === paymentFilter;
-
-      return matchSearch && matchStatus && matchPayment;
+        inv.invoice_number.toLowerCase().includes(q) ||
+        inv.shipmentRef.toLowerCase().includes(q);
+      const matchPayment = paymentFilter === "all" || inv.payment_status === paymentFilter;
+      return matchSearch && matchPayment;
     });
-  }, [shipments, search, statusFilter, paymentFilter]);
+  }, [savedInvoices, shipments, search, paymentFilter]);
 
-  const openSingleInvoiceModal = (shipment: ShipmentOverview, mode: "summary" | "detail") => {
+  // Filtered Final Settlement Invoices
+  const settlementInvoices = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const savedSettlement = savedInvoices.filter((inv) => inv.invoice_type === "final_settlement");
+
+    return savedSettlement.filter((inv) => {
+      const matchSearch = !q || inv.invoice_number.toLowerCase().includes(q);
+      const matchPayment = paymentFilter === "all" || inv.payment_status === paymentFilter;
+      return matchSearch && matchPayment;
+    });
+  }, [savedInvoices, search, paymentFilter]);
+
+  const openSingleInvoiceModal = (
+    shipment: ShipmentOverview | null,
+    orderIdsList: string[] | undefined,
+    mode: "summary" | "detail",
+    type: InvoiceType
+  ) => {
     setSelectedSingleShipment(shipment);
     setSelectedMultiShipments(undefined);
-    setSelectedOrderIds(undefined);
+    setSelectedOrderIds(orderIdsList);
     setModalMode(mode);
+    setTargetInvoiceType(type);
     setInvoiceModalOpen(true);
   };
 
-  const handleGenerateShipments = (shipmentsList: ShipmentOverview[]) => {
+  const handleOpenEditPayment = (invoiceNum: string, status: InvoicePaymentStatus) => {
+    setEditInvoiceNum(invoiceNum);
+    setEditInvoiceStatus(status);
+    setEditModalOpen(true);
+  };
+
+  const handleGenerateShipments = (shipmentsList: ShipmentOverview[], type: InvoiceType) => {
     setSelectedSingleShipment(null);
     setSelectedMultiShipments(shipmentsList);
     setSelectedOrderIds(undefined);
     setModalMode("detail");
+    setTargetInvoiceType(type);
     setInvoiceModalOpen(true);
   };
 
-  const handleGenerateOrders = (orderIdsList: string[]) => {
+  const handleGenerateOrders = (orderIdsList: string[], type: InvoiceType) => {
     setSelectedSingleShipment(null);
     setSelectedMultiShipments(undefined);
     setSelectedOrderIds(orderIdsList);
     setModalMode("detail");
+    setTargetInvoiceType(type);
     setInvoiceModalOpen(true);
   };
 
@@ -78,185 +141,291 @@ export function Invoices() {
     <>
       <PageHeader
         title="Invoices & Payments"
-        description="Shipment dispatch advance invoices, fulfillment payment schedules, and brand breakdowns."
+        description="50% Dispatch Advance Invoices & Final Settlement Invoices"
         actions={
-          <Button variant="primary" onClick={() => setGeneratorModalOpen(true)}>
-            <Plus className="h-4 w-4 mr-1.5" /> Generate Invoice
-          </Button>
+          isV360 ? (
+            <Button variant="primary" onClick={() => setGeneratorModalOpen(true)}>
+              <Plus className="h-4 w-4 mr-1.5" /> Generate Invoice
+            </Button>
+          ) : undefined
         }
       />
 
       {/* Filter & Search Bar */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-surface p-3 shadow-xs">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-surface p-3 shadow-xs">
         <div className="flex min-w-[240px] flex-1 items-center gap-2">
           <Search className="h-4 w-4 text-muted shrink-0" />
           <input
             type="text"
-            placeholder="Search by Invoice #, Shipment Code, Tracking, or Carrier..."
+            placeholder="Search by Invoice #, Shipment Code, Tracking, or Ref..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full bg-transparent text-xs text-ink placeholder:text-muted focus:outline-none"
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5 text-xs text-muted">
-            <Filter className="h-3.5 w-3.5" /> Filter Status:
-          </div>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="input text-xs py-1 px-2 h-8"
-          >
-            <option value="all">All Shipment Statuses</option>
-            <option value="ready_for_dispatch">Ready to dispatch</option>
-            <option value="handed_to_carrier">Handed to carrier</option>
-            <option value="in_transit">In transit</option>
-            <option value="customs">Customs</option>
-            <option value="arrived_bd">Arrived BD</option>
-            <option value="received_by_partner">Received by KBB</option>
-          </select>
-
+        <div className="flex items-center gap-2 text-xs">
+          <Filter className="h-3.5 w-3.5 text-muted" />
+          <span className="text-muted font-medium">Payment Status:</span>
           <select
             value={paymentFilter}
             onChange={(e) => setPaymentFilter(e.target.value)}
-            className="input text-xs py-1 px-2 h-8"
+            className="rounded border border-line bg-surface px-2.5 py-1 text-xs text-ink focus:outline-none focus:ring-1 focus:ring-primary"
           >
             <option value="all">All Payment Statuses</option>
-            <option value="not_paid">Not Paid (Unpaid)</option>
+            <option value="not_paid">Unpaid (Not Paid)</option>
             <option value="partially_paid">Partially Paid</option>
             <option value="paid">Paid</option>
           </select>
         </div>
       </div>
 
-      {/* Invoices Table */}
-      {shipmentsQuery.isLoading ? (
-        <Spinner label="Loading invoices" />
-      ) : shipmentsQuery.isError ? (
-        <ErrorState error={shipmentsQuery.error} onRetry={() => shipmentsQuery.refetch()} />
-      ) : filtered.length === 0 ? (
-        <EmptyState title="No invoices found">
-          {search || statusFilter !== "all" || paymentFilter !== "all"
-            ? "No invoices match your search or filter criteria."
-            : "Dispatched shipments will automatically list invoices here."}
-        </EmptyState>
+      {shipmentsQuery.isLoading || invoicesQuery.isLoading ? (
+        <Spinner label="Loading invoices dashboard..." />
       ) : (
-        <div className="panel overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-[13.5px]">
-              <thead className="table-head">
-                <tr>
-                  <th>Invoice #</th>
-                  <th>Date</th>
-                  <th>Shipment</th>
-                  <th>Carrier & Tracking</th>
-                  <th className="text-center">Orders</th>
-                  <th className="text-right">Shipment Value</th>
-                  <th className="text-right">50% Advance</th>
-                  <th>Payment Status</th>
-                  <th>Shipment Status</th>
-                  <th className="text-right">Invoice Options</th>
-                </tr>
-              </thead>
-              <tbody className="table-body">
-                {filtered.map((s) => {
-                  const invNo = `INV-KBB-${s.code}`;
-                  const issueDate = s.dispatched_at ? fmtDate(s.dispatched_at) : fmtDate(s.created_at);
-                  const estAdvance = s.cod_expected ? s.cod_expected * 0.5 : 0;
-                  const payStatus: InvoicePaymentStatus = s.invoice_payment_status || "not_paid";
+        /* TWO COLUMNS LAYOUT FOR INVOICES */
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* COLUMN 1: 50% DISPATCH ADVANCE INVOICES */}
+          <div className="rounded-lg border border-line bg-surface p-4 shadow-xs space-y-3">
+            <div className="flex items-center justify-between border-b border-line pb-3">
+              <div className="flex items-center gap-2">
+                <div className="grid h-8 w-8 place-items-center rounded bg-primary/10 text-primary">
+                  <Truck className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-ink">50% Dispatch Advance Invoices</h2>
+                  <p className="text-[11px] text-muted">Initial 50% advance charged upon dispatch</p>
+                </div>
+              </div>
+              <span className="rounded bg-primary-soft/60 px-2 py-0.5 text-xs font-semibold text-primary">
+                {dispatchInvoices.length} Invoices
+              </span>
+            </div>
 
-                  return (
-                    <tr key={s.id} className="hover:bg-surface-hover/50">
-                      <td className="font-mono text-xs font-semibold text-primary">
-                        {invNo}
-                      </td>
-                      <td className="whitespace-nowrap text-muted text-xs">
-                        {issueDate}
-                      </td>
-                      <td>
-                        <Link to={`/shipments/${s.id}`} className="font-semibold text-ink hover:underline">
-                          {s.code}
-                        </Link>
-                        <div className="text-[11.5px] text-muted">{s.origin} &rarr; {s.destination}</div>
-                      </td>
-                      <td>
-                        <div className="font-medium text-ink">{s.shipping_partner || "Carrier N/A"}</div>
-                        <div className="text-[11.5px] font-mono text-muted">{s.tracking_number || "No tracking"}</div>
-                      </td>
-                      <td className="text-center font-medium">
-                        {s.order_count}
-                        <span className="block text-[11px] text-muted">({plural(s.brand_count, "brand")})</span>
-                      </td>
-                      <td className="whitespace-nowrap text-right font-medium text-ink">
-                        {fmtMoney(s.cod_expected, "PKR")}
-                      </td>
-                      <td className="whitespace-nowrap text-right font-semibold text-emerald-700">
-                        {fmtMoney(estAdvance, "PKR")}
-                      </td>
-                      <td>
-                        {/* Payment Status Dropdown */}
-                        <select
-                          value={payStatus}
-                          disabled={updatePaymentStatus.isPending}
-                          onChange={(e) =>
-                            updatePaymentStatus.mutate({
-                              shipmentId: s.id,
-                              status: e.target.value as InvoicePaymentStatus,
-                            })
-                          }
-                          className={`rounded border px-2 py-1 text-xs font-semibold transition-colors focus:outline-none ${
-                            payStatus === "paid"
-                              ? "border-emerald-400 bg-emerald-50 text-emerald-800"
-                              : payStatus === "partially_paid"
-                              ? "border-amber-400 bg-amber-50 text-amber-800"
-                              : "border-slate-300 bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          <option value="not_paid">Not Paid</option>
-                          <option value="partially_paid">Partially Paid</option>
-                          <option value="paid">Paid</option>
-                        </select>
-                      </td>
-                      <td>
-                        <Pill {...SHIPMENT_STATUS[s.status as ShipmentStatusType]} />
-                      </td>
-                      <td className="whitespace-nowrap text-right">
-                        <div className="flex justify-end items-center gap-1.5">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => openSingleInvoiceModal(s, "summary")}
-                            title="View Summary Breakdown"
-                          >
-                            <Eye className="h-3.5 w-3.5 mr-1" /> Summary
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            onClick={() => openSingleInvoiceModal(s, "detail")}
-                            title="View & Print 2-Page Detailed Invoice PDF"
-                          >
-                            <Printer className="h-3.5 w-3.5 mr-1" /> Detailed PDF
-                          </Button>
-                        </div>
-                      </td>
+            {dispatchInvoices.length === 0 ? (
+              <p className="py-8 text-center text-xs text-muted">No 50% Dispatch Advance invoices found.</p>
+            ) : (
+              <div className="max-h-[500px] overflow-y-auto rounded border border-line">
+                <table className="w-full text-xs">
+                  <thead className="table-head sticky top-0 bg-surface border-b border-line">
+                    <tr>
+                      <th>Invoice #</th>
+                      <th>Ref</th>
+                      <th>Orders</th>
+                      <th className="text-right">50% Advance (PKR)</th>
+                      <th>Status</th>
+                      <th className="text-right">Actions</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody className="table-body divide-y divide-line">
+                    {dispatchInvoices.map((inv) => (
+                      <tr key={inv.id || inv.invoice_number} className="hover:bg-surface-hover/50">
+                        <td className="font-semibold text-primary">{inv.invoice_number}</td>
+                        <td className="text-ink font-medium">{inv.shipmentRef || "Custom"}</td>
+                        <td className="text-muted">{inv.order_count}</td>
+                        <td className="text-right font-bold text-ink">
+                          {fmtMoney(inv.advance_amount || 0.5 * inv.total_value, "PKR")}
+                        </td>
+                        <td>
+                          <span
+                            className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              inv.payment_status === "paid"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : inv.payment_status === "partially_paid"
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-rose-100 text-rose-800"
+                            }`}
+                          >
+                            {inv.payment_status === "paid"
+                              ? "Paid"
+                              : inv.payment_status === "partially_paid"
+                              ? "Partially Paid"
+                              : "Unpaid"}
+                          </span>
+                        </td>
+                        <td className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() =>
+                                openSingleInvoiceModal(
+                                  inv.shipmentObj || null,
+                                  inv.order_ids || undefined,
+                                  "summary",
+                                  "dispatch_advance"
+                                )
+                              }
+                              title="Summary View"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() =>
+                                openSingleInvoiceModal(
+                                  inv.shipmentObj || null,
+                                  inv.order_ids || undefined,
+                                  "detail",
+                                  "dispatch_advance"
+                                )
+                              }
+                              title="Detailed PDF View"
+                            >
+                              <Printer className="h-3.5 w-3.5" />
+                            </Button>
+                            {isV360 && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() =>
+                                  handleOpenEditPayment(
+                                    inv.invoice_number,
+                                    inv.payment_status as InvoicePaymentStatus
+                                  )
+                                }
+                                title="Edit Payment Status"
+                              >
+                                <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* COLUMN 2: FINAL SETTLEMENT INVOICES */}
+          <div className="rounded-lg border border-line bg-surface p-4 shadow-xs space-y-3">
+            <div className="flex items-center justify-between border-b border-line pb-3">
+              <div className="flex items-center gap-2">
+                <div className="grid h-8 w-8 place-items-center rounded bg-emerald-500/10 text-emerald-600">
+                  <RefreshCw className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-ink">Final Settlement Invoices</h2>
+                  <p className="text-[11px] text-muted">Delivered 50% Remaining & Returned Clawbacks</p>
+                </div>
+              </div>
+              <span className="rounded bg-emerald-100 text-emerald-800 px-2 py-0.5 text-xs font-semibold">
+                {settlementInvoices.length} Invoices
+              </span>
+            </div>
+
+            {settlementInvoices.length === 0 ? (
+              <p className="py-8 text-center text-xs text-muted">No Final Settlement invoices generated yet.</p>
+            ) : (
+              <div className="max-h-[500px] overflow-y-auto rounded border border-line">
+                <table className="w-full text-xs">
+                  <thead className="table-head sticky top-0 bg-surface border-b border-line">
+                    <tr>
+                      <th>Invoice #</th>
+                      <th>Date</th>
+                      <th>Orders</th>
+                      <th className="text-right">Net Payable (PKR)</th>
+                      <th>Status</th>
+                      <th className="text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="table-body divide-y divide-line">
+                    {settlementInvoices.map((inv) => (
+                      <tr key={inv.id} className="hover:bg-surface-hover/50">
+                        <td className="font-semibold text-emerald-700">{inv.invoice_number}</td>
+                        <td className="text-muted">{fmtDate(inv.created_at)}</td>
+                        <td className="text-muted">{inv.order_count}</td>
+                        <td className="text-right font-bold text-emerald-800">
+                          {fmtMoney(inv.payable_amount, "PKR")}
+                        </td>
+                        <td>
+                          <span
+                            className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              inv.payment_status === "paid"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : inv.payment_status === "partially_paid"
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-rose-100 text-rose-800"
+                            }`}
+                          >
+                            {inv.payment_status === "paid"
+                              ? "Paid"
+                              : inv.payment_status === "partially_paid"
+                              ? "Partially Paid"
+                              : "Unpaid"}
+                          </span>
+                        </td>
+                        <td className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() =>
+                                openSingleInvoiceModal(
+                                  null,
+                                  inv.order_ids || undefined,
+                                  "summary",
+                                  "final_settlement"
+                                )
+                              }
+                              title="Summary View"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() =>
+                                openSingleInvoiceModal(
+                                  null,
+                                  inv.order_ids || undefined,
+                                  "detail",
+                                  "final_settlement"
+                                )
+                              }
+                              title="Detailed PDF View"
+                            >
+                              <Printer className="h-3.5 w-3.5" />
+                            </Button>
+                            {isV360 && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() =>
+                                  handleOpenEditPayment(
+                                    inv.invoice_number,
+                                    inv.payment_status as InvoicePaymentStatus
+                                  )
+                                }
+                                title="Edit Payment Status"
+                              >
+                                <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Invoice Generator Selection Modal */}
-      <GenerateInvoiceModal
-        open={generatorModalOpen}
-        onClose={() => setGeneratorModalOpen(false)}
-        onGenerateShipments={handleGenerateShipments}
-        onGenerateOrders={handleGenerateOrders}
-      />
+      {/* Invoice Generator Selection Modal (V360 Only) */}
+      {isV360 && (
+        <GenerateInvoiceModal
+          open={generatorModalOpen}
+          onClose={() => setGeneratorModalOpen(false)}
+          onGenerateShipments={handleGenerateShipments}
+          onGenerateOrders={handleGenerateOrders}
+        />
+      )}
 
       {/* Invoice View / PDF Modal */}
       <KbbInvoiceDialog
@@ -266,7 +435,18 @@ export function Invoices() {
         shipments={selectedMultiShipments}
         orderIds={selectedOrderIds}
         initialMode={modalMode}
+        initialInvoiceType={targetInvoiceType}
       />
+
+      {/* Edit Payment Status Modal (V360 Only) */}
+      {isV360 && (
+        <EditPaymentStatusModal
+          open={editModalOpen}
+          onClose={() => setEditModalOpen(false)}
+          invoiceNumber={editInvoiceNum}
+          currentStatus={editInvoiceStatus}
+        />
+      )}
     </>
   );
 }

@@ -1,17 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, FileText, PackagePlus, Scale } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ChevronRight, FileText, PackagePlus, Scale } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
 import { supabase } from "@/lib/supabase";
 import {
-  useAddToShipment, useOrderList, useRemoveFromShipment, useSetShipmentBrandWeight, useShipment,
-  useShipmentBrandWeights, useShipmentCalculatedWeight, useShipmentEvents, useShipmentStatus, useUpdateShipment,
+  useAddToShipment, useBdConfirmReceiving, useBdReceivedItems, useBdSaveOrderReceiving, useOrderItems, useOrderList,
+  useRemoveFromShipment, useSetShipmentBrandWeight, useShipment, useShipmentBrandWeights, useShipmentCalculatedWeight,
+  useShipmentEvents, useShipmentOrdersWithItems, useShipmentStatus, useUpdateShipment,
 } from "@/hooks/useData";
-import { SHIPMENT_FLOW, SHIPMENT_STATUS, nextShipmentStatus } from "@/lib/status";
+import type { BdReceivedItem, OrderWithItemsForBd } from "@/hooks/useData";
+import { SHIPMENT_STATUS, V360_SHIPMENT_FLOW, nextV360ShipmentStatus } from "@/lib/status";
 import { describeError } from "@/lib/errors";
 import { fmtDateTime, fmtMoney, plural } from "@/lib/format";
-import type { OrderOverview, ShipmentOverview } from "@/lib/types";
+import type { OrderOverview, ShipmentOverview, ShipmentStatus } from "@/lib/types";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -22,17 +24,30 @@ import { ActionDialog } from "@/components/ActionDialog";
 import { KbbInvoiceDialog } from "@/components/KbbInvoiceDialog";
 import { Facts, Section } from "./OrderDetail";
 
+const KBB_HIDDEN_STEPS = new Set<ShipmentStatus>(["draft", "ready_for_dispatch", "handed_to_carrier"]);
+
 function Stepper({ status }: { status: ShipmentOverview["status"] }) {
-  const cur = SHIPMENT_FLOW.indexOf(status);
+  const { isKbb } = useOps();
+  // Legacy in_transit/customs map to handed_to_carrier for progress calculation
+  const displayStatus: ShipmentStatus =
+    status === "in_transit" || status === "customs" ? "handed_to_carrier" : status;
+  const cur = V360_SHIPMENT_FLOW.indexOf(displayStatus);
   return (
     <ol className="flex flex-wrap gap-x-1 gap-y-2 text-[12.5px]" aria-label="Shipment progress">
-      {SHIPMENT_FLOW.map((s, i) => (
-        <li key={s} aria-current={i === cur ? "step" : undefined}
-          className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${i < cur ? "border-primary/30 bg-primary-soft text-primary"
-            : i === cur ? "border-primary bg-primary font-medium text-primary-fg" : "border-line text-faint"}`}>
-          {i < cur && <Check className="h-3 w-3" strokeWidth={3} aria-hidden />}{SHIPMENT_STATUS[s].label}
-        </li>
-      ))}
+      {V360_SHIPMENT_FLOW.map((s, i) => {
+        if (isKbb && KBB_HIDDEN_STEPS.has(s)) return null;
+        return (
+          <li key={s} aria-current={i === cur ? "step" : undefined}
+            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${
+              i < cur ? "border-primary/30 bg-primary-soft text-primary"
+              : i === cur ? "border-primary bg-primary font-medium text-primary-fg"
+              : "border-line text-faint"
+            }`}>
+            {i < cur && <Check className="h-3 w-3" strokeWidth={3} aria-hidden />}
+            {SHIPMENT_STATUS[s].label}
+          </li>
+        );
+      })}
     </ol>
   );
 }
@@ -308,6 +323,271 @@ function AddOrdersDialog({ shipment, open, onClose }: { shipment: ShipmentOvervi
   );
 }
 
+function OrderNumberCell({ order }: { order: OrderOverview }) {
+  const [active, setActive] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const items = useOrderItems(active ? order.id : null);
+
+  const show = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setActive(true);
+  };
+  const hide = () => {
+    timerRef.current = setTimeout(() => setActive(false), 120);
+  };
+
+  return (
+    <div className="relative inline-block" onMouseEnter={show} onMouseLeave={hide}>
+      <Link to={`/orders/${order.id}`} className="font-semibold hover:underline">{order.order_number}</Link>
+      {active && (
+        <div
+          className="absolute left-0 top-full z-50 mt-1 min-w-[220px] rounded-lg border border-line bg-surface p-2.5 shadow-pop text-[12.5px]"
+          onMouseEnter={show}
+          onMouseLeave={hide}
+        >
+          {items.isLoading ? (
+            <span className="text-faint">Loading…</span>
+          ) : items.data?.length === 0 ? (
+            <span className="text-faint">No items</span>
+          ) : (
+            <ul className="space-y-1">
+              {items.data?.map((item, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="w-5 shrink-0 text-right font-medium">{item.quantity}×</span>
+                  <span className="text-ink">{item.sku ?? item.product_name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ItemEdit = { qty: string; note: string };
+
+function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverview; canOverride?: boolean }) {
+  const orders = useShipmentOrdersWithItems(shipment.id);
+  const received = useBdReceivedItems(shipment.id);
+  const saveOrder = useBdSaveOrderReceiving({ inlineErrors: true });
+  const confirm = useBdConfirmReceiving({ inlineErrors: true });
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [edits, setEdits] = useState<Record<string, Record<string, ItemEdit>>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [confirmErr, setConfirmErr] = useState<string | null>(null);
+  const initialized = useRef(false);
+
+  useEffect(() => {
+    if (initialized.current || !orders.data || !received.data) return;
+    initialized.current = true;
+    const next: Record<string, Record<string, ItemEdit>> = {};
+    for (const o of orders.data) {
+      next[o.id] = {};
+      for (const item of o.order_items) {
+        const saved = received.data.find((r: BdReceivedItem) => r.order_item_id === item.id);
+        next[o.id][item.id] = {
+          qty: String(saved ? saved.received_qty : item.quantity),
+          note: saved?.note ?? "",
+        };
+      }
+    }
+    setEdits(next);
+  }, [orders.data, received.data]);
+
+  const isOrderChecked = (orderId: string) => {
+    const o = orders.data?.find((x) => x.id === orderId);
+    return !!o && o.order_items.every((item) => received.data?.some((r: BdReceivedItem) => r.order_item_id === item.id));
+  };
+
+  const checkedCount = orders.data?.filter((o) => isOrderChecked(o.id)).length ?? 0;
+  const totalOrders = orders.data?.length ?? 0;
+  const allChecked = totalOrders > 0 && checkedCount === totalOrders;
+  const unclearedDiscrepancies = received.data?.filter((r: BdReceivedItem) => r.received_qty !== r.expected_qty && !r.note).length ?? 0;
+  const canConfirm = allChecked && unclearedDiscrepancies === 0;
+
+  const setItemEdit = (orderId: string, itemId: string, patch: Partial<ItemEdit>) =>
+    setEdits((prev) => ({
+      ...prev,
+      [orderId]: { ...prev[orderId], [itemId]: { ...(prev[orderId]?.[itemId] ?? { qty: "", note: "" }), ...patch } },
+    }));
+
+  const handleSaveOrder = (o: OrderWithItemsForBd) => {
+    const orderEdits = edits[o.id] ?? {};
+    const items = o.order_items.map((item) => ({
+      order_item_id: item.id,
+      received_qty: Math.max(0, Number(orderEdits[item.id]?.qty ?? item.quantity) || 0),
+      note: orderEdits[item.id]?.note ?? "",
+    }));
+    setSaveErr(null);
+    setSavingId(o.id);
+    saveOrder.mutate(
+      { shipmentId: shipment.id, orderId: o.id, items },
+      {
+        onSuccess: () => { setSavingId(null); setExpanded(null); },
+        onError: (e) => { setSavingId(null); setSaveErr(describeError(e)); },
+      },
+    );
+  };
+
+  return (
+    <Section title="Receiving check">
+      <div className="mb-3 flex items-center justify-between text-[13.5px]">
+        <span className="text-muted">{checkedCount} of {totalOrders} orders checked</span>
+        {allChecked && unclearedDiscrepancies === 0 && (
+          <span className="text-[12.5px] font-medium text-primary">All items verified</span>
+        )}
+      </div>
+
+      {orders.isLoading || received.isLoading ? <Spinner /> : (
+        <ul className="-mx-4 divide-y divide-line">
+          {(orders.data ?? []).map((o) => {
+            const checked = isOrderChecked(o.id);
+            const isExpanded = expanded === o.id;
+            const orderEdits = edits[o.id] ?? {};
+            const orderDiscrepancies = o.order_items.filter((item) => {
+              const saved = received.data?.find((r: BdReceivedItem) => r.order_item_id === item.id);
+              return saved && saved.received_qty !== saved.expected_qty;
+            });
+
+            return (
+              <li key={o.id}>
+                <button
+                  className="flex w-full items-center gap-3 px-4 py-3 text-[13.5px] text-left hover:bg-sunken/50"
+                  onClick={() => setExpanded(isExpanded ? null : o.id)}
+                  aria-expanded={isExpanded}
+                >
+                  {isExpanded
+                    ? <ChevronDown className="h-4 w-4 shrink-0 text-muted" />
+                    : <ChevronRight className="h-4 w-4 shrink-0 text-muted" />}
+                  <span className="w-28 shrink-0 font-semibold">{o.order_number}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted">{o.customer_name ?? "—"}</span>
+                  <span className="flex items-center gap-2 text-[12.5px]">
+                    <span className="text-faint">{o.order_items.length} item{o.order_items.length !== 1 ? "s" : ""}</span>
+                    {orderDiscrepancies.length > 0 && (
+                      <span className="font-medium text-g-problem">{orderDiscrepancies.length} short</span>
+                    )}
+                    {checked && orderDiscrepancies.length === 0 && (
+                      <Check className="h-3.5 w-3.5 text-primary" strokeWidth={3} />
+                    )}
+                  </span>
+                </button>
+
+                {isExpanded && (
+                  <div className="border-t border-line bg-sunken/30 px-4 pb-4 pt-3">
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[480px] text-[13px]">
+                        <thead>
+                          <tr className="border-b border-line text-left text-faint">
+                            <th className="pb-2 font-medium">Item</th>
+                            <th className="pb-2 text-center font-medium">Expected</th>
+                            <th className="pb-2 text-center font-medium">Received</th>
+                            <th className="pb-2 font-medium">Note</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-line">
+                          {o.order_items.map((item) => {
+                            const edit = orderEdits[item.id] ?? { qty: String(item.quantity), note: "" };
+                            const parsed = parseInt(edit.qty, 10);
+                            const mismatch = !Number.isNaN(parsed) && parsed !== item.quantity;
+                            const needsNote = mismatch && !edit.note.trim();
+                            return (
+                              <tr key={item.id}>
+                                <td className="py-2 pr-4">
+                                  <span>{item.product_name}</span>
+                                  {item.sku && <span className="ml-1 text-faint">· {item.sku}</span>}
+                                </td>
+                                <td className="py-2 text-center font-medium">{item.quantity}</td>
+                                <td className="py-2 text-center">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={edit.qty}
+                                    onChange={(e) => setItemEdit(o.id, item.id, { qty: e.target.value })}
+                                    className={`input w-16 text-center text-[13px] ${mismatch ? "border-g-problem text-g-problem" : ""}`}
+                                  />
+                                </td>
+                                <td className="py-2 pl-3">
+                                  <input
+                                    type="text"
+                                    placeholder={needsNote ? "Note required ↑" : "Optional note"}
+                                    value={edit.note}
+                                    onChange={(e) => setItemEdit(o.id, item.id, { note: e.target.value })}
+                                    className={`input text-[13px] ${needsNote ? "border-g-problem" : ""}`}
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    {saveErr && savingId === o.id && (
+                      <p role="alert" className="mt-2 text-[13px] text-danger">{saveErr}</p>
+                    )}
+                    <div className="mt-3 flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={savingId === o.id}
+                        disabled={!!savingId}
+                        onClick={() => handleSaveOrder(o)}
+                      >
+                        Save check
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+        <Button
+          variant="primary"
+          disabled={!canConfirm || confirm.isPending}
+          loading={confirm.isPending}
+          onClick={() => {
+            setConfirmErr(null);
+            confirm.mutate(
+              { shipmentId: shipment.id, override: false },
+              { onError: (e) => setConfirmErr(describeError(e)) },
+            );
+          }}
+        >
+          Complete receiving
+        </Button>
+        {canOverride && allChecked && unclearedDiscrepancies > 0 && (
+          <Button
+            variant="ghost"
+            disabled={confirm.isPending}
+            loading={confirm.isPending}
+            onClick={() => {
+              setConfirmErr(null);
+              confirm.mutate(
+                { shipmentId: shipment.id, override: true },
+                { onError: (e) => setConfirmErr(describeError(e)) },
+              );
+            }}
+          >
+            Override & complete
+          </Button>
+        )}
+        {!allChecked && (
+          <span className="text-[13px] text-muted">{totalOrders - checkedCount} order(s) not yet checked</span>
+        )}
+        {allChecked && unclearedDiscrepancies > 0 && (
+          <span className="text-[13px] text-g-problem">{unclearedDiscrepancies} discrepancy(s) need notes</span>
+        )}
+        {confirmErr && <p role="alert" className="text-[13px] text-danger">{confirmErr}</p>}
+      </div>
+    </Section>
+  );
+}
+
 export function ShipmentDetail() {
   const { id = "" } = useParams();
   const { isV360, isKbb } = useOps();
@@ -322,14 +602,14 @@ export function ShipmentDetail() {
   const [showKbbInvoice, setShowKbbInvoice] = useState(false);
 
   const s = q.data;
-  const next = s ? nextShipmentStatus(s.status) : null;
+  const next = s ? nextV360ShipmentStatus(s.status) : null;
   const packing = !!s && (s.status === "draft" || s.status === "ready_for_dispatch");
-  const kbbCanReceive = !!s && isKbb && ["handed_to_carrier", "in_transit", "customs", "arrived_bd"].includes(s.status);
+  const kbbCanReceive = !!s && isKbb && ["handed_to_carrier", "in_transit", "customs"].includes(s.status);
   const target = isKbb ? "received_by_partner" : next;
   const blocker = useMemo(() => {
     if (!s || !target) return null;
     if (target !== "draft" && target !== "ready_for_dispatch" && s.order_count === 0) return "Add orders first";
-    if (["handed_to_carrier", "in_transit", "customs", "arrived_bd", "received_by_partner"].includes(target) && (!s.tracking_number || !s.shipping_partner))
+    if (["handed_to_carrier", "arrived_bd", "received_by_partner"].includes(target) && (!s.tracking_number || !s.shipping_partner))
       return "Save the shipping partner and tracking ID first";
     return null;
   }, [s, target]);
@@ -351,9 +631,9 @@ export function ShipmentDetail() {
             <FileText className="h-4 w-4" /> KBB Invoice PDF
           </Button>
           {isV360 && packing && <Button onClick={() => setAdding(true)}><PackagePlus className="h-4 w-4" /> Add orders</Button>}
-          {((isV360 && next) || kbbCanReceive) && target && (
+          {((isV360 && next && s.status !== "arrived_bd") || kbbCanReceive) && target && (
             <Button variant="primary" onClick={() => { move.reset(); setMoving(true); }}>
-              {isKbb ? "Confirm receipt" : `Mark as ${SHIPMENT_STATUS[target].label.toLowerCase()}`}
+              {isKbb ? "Mark as received by kbb" : `Mark as ${SHIPMENT_STATUS[target].label.toLowerCase()}`}
             </Button>
           )}
         </div>
@@ -374,7 +654,7 @@ export function ShipmentDetail() {
                   <tbody className="table-body">
                     {orders.data!.rows.map((o) => (
                       <tr key={o.id}>
-                        <td><Link to={`/orders/${o.id}`} className="font-semibold hover:underline">{o.order_number}</Link></td>
+                        <td><OrderNumberCell order={o} /></td>
                         <td>{o.brand_name}</td>
                         <td><div className="max-w-[180px] truncate">{o.customer_name}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>
                         <td className="text-right">{o.item_count}</td>
@@ -388,6 +668,7 @@ export function ShipmentDetail() {
               </div>
             )}
           </Section>
+          {s.status === "arrived_bd" && <BdReceivingSection shipment={s} canOverride={isV360} />}
         </div>
         <aside className="space-y-6">
           <Section title="Details"><DetailsForm s={s} editable={isV360 && s.status !== "received_by_partner"} /></Section>

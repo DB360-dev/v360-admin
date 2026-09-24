@@ -4,7 +4,7 @@ import { DEDICATED, NOTE_REQUIRED, STATUS, TERMINAL } from "@/lib/status";
 import type { OrderItem, OrderStatus, Order } from "@/lib/types";
 import { useOps } from "@/context/OpsContext";
 import {
-  useAddNote, useChangeStatus, useHold, useOverride, useRemoveFromShipment, useResume, useTransitions,
+  useChangeStatus, useHold, useOverride, useRemoveFromShipment, useResume, useTransitions,
 } from "@/hooks/useData";
 import { Button } from "./ui/Button";
 import { ActionDialog } from "./ActionDialog";
@@ -30,7 +30,7 @@ const EDITABLE: OrderStatus[] = ["new", "confirmation_pending", "customer_unreac
 
 type Dlg =
   | { kind: "status"; to: OrderStatus }
-  | { kind: "hold" | "resume" | "note" | "override" | "remove" | "delivered" | "tracking" | "receive" | "edit" | "return" };
+  | { kind: "hold" | "resume" | "override" | "remove" | "delivered" | "tracking" | "receive" | "edit" | "return" };
 
 export function useAvailableTransitions(status: OrderStatus): OrderStatus[] {
   const { isV360 } = useOps();
@@ -61,25 +61,29 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
   const change = useChangeStatus({ inlineErrors: true });
   const hold = useHold({ inlineErrors: true });
   const resume = useResume({ inlineErrors: true });
-  const note = useAddNote({ inlineErrors: true });
   const override = useOverride({ inlineErrors: true });
   const remove = useRemoveFromShipment({ inlineErrors: true });
   const [overrideTo, setOverrideTo] = useState<OrderStatus | "">("");
 
   const open = (d: Dlg) => {
-    change.reset(); hold.reset(); resume.reset(); note.reset(); override.reset(); remove.reset();
+    change.reset(); hold.reset(); resume.reset(); override.reset(); remove.reset();
     if (d.kind === "override") setOverrideTo("");
     setDlg(d);
   };
   const size = "sm";
 
   const lastMile = ["received_by_partner", "preparing_for_delivery", "out_for_delivery", "delivery_failed"].includes(s);
-  const sorted = [...moves].sort((a, b) => Number(DANGER.includes(a)) - Number(DANGER.includes(b)));
+  // items for hub receiving; also covers QueueOrder.order_items for return dialog
+  const orderItems = items ?? (order as { order_items?: OrderItem[] }).order_items;
+  // In compact last-mile view, Return moves to the actions group — remove it from status buttons
+  const sorted = [...moves]
+    .filter((t) => !(compact && lastMile && t === "returned"))
+    .sort((a, b) => Number(DANGER.includes(a)) - Number(DANGER.includes(b)));
 
   // --- Group 1: status / confirmation buttons (move the order forward) ---
   const statusChildren = [
     s === "out_for_delivery" && <Button key="delivered" size={size} variant="primary" onClick={() => open({ kind: "delivered" })}>Mark delivered</Button>,
-    isV360 && (s === "dispatched_to_hub" || s === "hub_issue") && items && (
+    isV360 && (s === "dispatched_to_hub" || s === "hub_issue") && orderItems && (
       <Button key="receive" size={size} variant="primary" onClick={() => open({ kind: "receive" })}>Receive at hub</Button>
     ),
     s === "hold" && <Button key="resume" size={size} variant="primary" onClick={() => open({ kind: "resume" })}>Resume</Button>,
@@ -90,14 +94,14 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
     )),
   ];
 
-  // --- Group 2: action buttons (notes, hold, tracking, edits — never status moves) ---
+  // --- Group 2: action buttons (hold, tracking, edits — never status moves) ---
   const actionChildren = [
     lastMile && <Button key="tracking" size={size} onClick={() => open({ kind: "tracking" })}>{order.delivery_tracking_number ? "Edit tracking" : "Add tracking"}</Button>,
     !compact && isV360 && s === "assigned_to_shipment" && <Button key="remove" size={size} onClick={() => open({ kind: "remove" })}>Remove from shipment</Button>,
-    !compact && isV360 && s === "returned" && <Button key="return" size={size} onClick={() => open({ kind: "return" })}>Decide on return</Button>,
+    !compact && isV360 && s === "returned" && (!order.return_disposition || order.return_disposition === "pending") && <Button key="return" size={size} onClick={() => open({ kind: "return" })}>Decide on return</Button>,
     !compact && isV360 && EDITABLE.includes(s) && <Button key="edit" size={size} onClick={() => open({ kind: "edit" })}>Edit customer</Button>,
-    !compact && <Button key="note" size={size} variant="ghost" onClick={() => open({ kind: "note" })}>Add note</Button>,
-    !compact && s !== "hold" && !TERMINAL.includes(s) && <Button key="hold" size={size} variant="ghost" onClick={() => open({ kind: "hold" })}>Hold</Button>,
+    (lastMile || !compact) && s !== "hold" && !TERMINAL.includes(s) && <Button key="hold" size={size} variant="ghost" onClick={() => open({ kind: "hold" })}>Hold</Button>,
+    lastMile && moves.includes("returned") && <Button key="return-mark" size={size} variant="ghost" onClick={() => open({ kind: "status", to: "returned" })}>Return</Button>,
     !compact && isV360 && <Button key="override" size={size} variant="ghost" onClick={() => open({ kind: "override" })}>Override</Button>,
   ];
 
@@ -161,11 +165,6 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
           title={`Resume ${order.order_number}`} description={order.previous_status ? `It returns to "${STATUS[order.previous_status].label}".` : undefined}
           confirmLabel="Resume" noteLabel="Note" onConfirm={(n) => resume.mutate({ id: order.id, note: n }, { onSuccess: close })} />
       )}
-      {dlg?.kind === "note" && (
-        <ActionDialog open onClose={close} busy={note.isPending} error={note.error ? describeError(note.error) : null}
-          title={`Note on ${order.order_number}`} description="Visible in the order timeline."
-          confirmLabel="Add note" noteLabel="Note" noteRequired onConfirm={(n) => note.mutate({ id: order.id, note: n }, { onSuccess: close })} />
-      )}
       {dlg?.kind === "remove" && (
         <ActionDialog open onClose={close} busy={remove.isPending} error={remove.error ? describeError(remove.error) : null}
           title={`Remove ${order.order_number} from its shipment?`} description="It goes back to ready for shipment."
@@ -187,9 +186,9 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
       )}
       <DeliveredDialog order={order} open={dlg?.kind === "delivered"} onClose={close} />
       <TrackingDialog order={order} open={dlg?.kind === "tracking"} onClose={close} />
-      {items && <ReceiveDialog order={order} items={items} open={dlg?.kind === "receive"} onClose={close} />}
+      {orderItems && <ReceiveDialog order={order} items={orderItems} open={dlg?.kind === "receive"} onClose={close} />}
       <EditCustomerDialog order={order} open={dlg?.kind === "edit"} onClose={close} />
-      <ReturnDialog order={order} open={dlg?.kind === "return"} onClose={close} />
+      <ReturnDialog order={order} items={orderItems} open={dlg?.kind === "return"} onClose={close} />
     </>
   );
 }

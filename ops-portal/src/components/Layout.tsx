@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, Banknote, Boxes, Building2, Coins, Gauge, Inbox, LogOut, Menu, Monitor, Moon, PhoneCall, Receipt, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
+  Activity, AlertTriangle, Banknote, Boxes, Building2, Coins, Gauge, Inbox, LogOut, Menu, Monitor, Moon, PackageCheck, PhoneCall, Receipt, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useOps, type OpsRole } from "@/context/OpsContext";
 import { useTheme, type ThemeChoice } from "@/context/ThemeContext";
-import { useStatusCounts } from "@/hooks/useData";
+import { useBdDiscrepancyCount, useStatusCounts } from "@/hooks/useData";
 import { useOpsRealtime } from "@/hooks/useRealtime";
 import { useOnline } from "@/hooks/useOnline";
 import { CONFIRM_QUEUE, DELIVERY_QUEUE } from "@/lib/status";
@@ -16,7 +16,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { NotificationBanner } from "./NotificationBanner";
 import { NotificationToggle, NotificationPanel } from "./NotificationArea";
 
-type Badge = "confirm" | "deliver" | "hub";
+type Badge = "confirm" | "deliver" | "hub" | "discrepancy";
 interface NavItem { to: string; label: string; icon: LucideIcon; end?: boolean; roles: OpsRole[]; badge?: Badge; section?: string }
 
 const NAV: NavItem[] = [
@@ -25,6 +25,8 @@ const NAV: NavItem[] = [
   { to: "/confirmations", label: "Confirmations", icon: PhoneCall, roles: ["v360", "kbb"], badge: "confirm", section: "Work queues" },
   { to: "/receiving", label: "Hub receiving", icon: Inbox, roles: ["v360"], badge: "hub" },
   { to: "/shipments", label: "Shipments", icon: Ship, roles: ["v360", "kbb"] },
+  { to: "/discrepancies", label: "Discrepancies", icon: AlertTriangle, roles: ["v360", "kbb"], badge: "discrepancy" },
+  { to: "/inventory", label: "Inventory", icon: PackageCheck, roles: ["v360", "kbb"] },
   { to: "/deliveries", label: "Deliveries", icon: Truck, roles: ["v360", "kbb"], badge: "deliver" },
   { to: "/invoices", label: "Invoices", icon: Receipt, roles: ["v360", "kbb"], section: "Finance" },
   { to: "/brands", label: "Brands", icon: Building2, roles: ["v360"], section: "Admin" },
@@ -58,10 +60,12 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { user, signOut } = useAuth();
   const c = useStatusCounts().data ?? {};
   const sum = (ss: string[]) => ss.reduce((n, s) => n + (c[s as keyof typeof c] ?? 0), 0);
+  const discrepancyCount = useBdDiscrepancyCount().data ?? 0;
   const badges: Record<Badge, number> = {
     confirm: sum(CONFIRM_QUEUE),
     deliver: sum(DELIVERY_QUEUE),
     hub: sum(["dispatched_to_hub", "hub_issue"]),
+    discrepancy: discrepancyCount,
   };
   const items = NAV.filter((n) => role && n.roles.includes(role));
 
