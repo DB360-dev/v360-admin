@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
-import { Package, Search, Ship } from "lucide-react";
+import { ChevronDown, Filter, Package, Search, Ship, X } from "lucide-react";
 import { useOrderList, useShipments } from "@/hooks/useData";
 import { fmtDate, fmtMoney } from "@/lib/format";
-import { SHIPMENT_STATUS } from "@/lib/status";
-import type { ShipmentOverview, ShipmentStatus as ShipmentStatusType } from "@/lib/types";
+import { SHIPMENT_STATUS, STATUS } from "@/lib/status";
+import type { OrderStatus, ShipmentOverview, ShipmentStatus as ShipmentStatusType } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { Pill } from "@/components/ui/StatusBadge";
@@ -17,6 +17,33 @@ interface GenerateInvoiceModalProps {
 }
 
 type Step = "choose" | "by_shipments" | "by_orders";
+
+const ALL_STATUS_OPTIONS: { value: OrderStatus; label: string; group: string }[] = [
+  { value: "ready_for_shipment", label: "Ready for shipment", group: "V360 Hub" },
+  { value: "assigned_to_shipment", label: "In a shipment", group: "V360 Hub" },
+  { value: "dispatched_to_hub", label: "Dispatched to hub", group: "V360 Hub" },
+  { value: "received_at_hub", label: "Received at hub", group: "V360 Hub" },
+  { value: "shipped", label: "Shipped", group: "In Transit" },
+  { value: "in_transit", label: "In transit", group: "In Transit" },
+  { value: "customs", label: "Customs / clearance", group: "In Transit" },
+  { value: "arrived_bd", label: "Arrived in Bangladesh", group: "In Transit" },
+  { value: "received_by_partner", label: "Received by KBB", group: "KBB Delivery" },
+  { value: "preparing_for_delivery", label: "Preparing for delivery", group: "KBB Delivery" },
+  { value: "out_for_delivery", label: "Out for delivery", group: "KBB Delivery" },
+  { value: "delivered", label: "Delivered", group: "Delivered" },
+  { value: "brand_preparing", label: "Brand preparing", group: "Brand" },
+  { value: "brand_confirmed", label: "Brand confirmed", group: "Brand" },
+  { value: "confirmed", label: "Confirmed", group: "Brand" },
+  { value: "needs_amendment", label: "Needs amendment", group: "Brand" },
+  { value: "new", label: "New", group: "Initial" },
+  { value: "confirmation_pending", label: "Confirmation pending", group: "Initial" },
+  { value: "customer_unreachable", label: "Customer unreachable", group: "Initial" },
+  { value: "hub_issue", label: "Hub issue", group: "Problems" },
+  { value: "delivery_failed", label: "Delivery failed", group: "Problems" },
+  { value: "returned", label: "Returned", group: "Problems" },
+  { value: "hold", label: "On hold", group: "Problems" },
+  { value: "cancelled", label: "Cancelled", group: "Closed" },
+];
 
 export function GenerateInvoiceModal({
   open,
@@ -33,8 +60,11 @@ export function GenerateInvoiceModal({
 
   // Order selection state
   const [orderSearch, setOrderSearch] = useState("");
+  const [selectedStatuses, setSelectedStatuses] = useState<OrderStatus[]>([]);
+  const [showStatusFilterMenu, setShowStatusFilterMenu] = useState(false);
+
   const ordersQuery = useOrderList({
-    statuses: null,
+    statuses: selectedStatuses.length > 0 ? selectedStatuses : null,
     search: orderSearch || undefined,
     limit: 100,
   });
@@ -47,6 +77,8 @@ export function GenerateInvoiceModal({
     setSelectedOrderIds(new Set());
     setShipmentSearch("");
     setOrderSearch("");
+    setSelectedStatuses([]);
+    setShowStatusFilterMenu(false);
     onClose();
   };
 
@@ -93,6 +125,13 @@ export function GenerateInvoiceModal({
 
   // Orders selection calculations
   const allOrders = ordersQuery.data?.rows ?? [];
+
+  const toggleStatus = (st: OrderStatus) => {
+    setSelectedStatuses((prev) =>
+      prev.includes(st) ? prev.filter((s) => s !== st) : [...prev, st]
+    );
+  };
+
   const toggleOrder = (id: string) => {
     setSelectedOrderIds((prev) => {
       const next = new Set(prev);
@@ -172,7 +211,7 @@ export function GenerateInvoiceModal({
                   Generate by Orders
                 </h3>
                 <p className="mt-1 text-xs text-muted leading-relaxed">
-                  Select specific orders directly across brands to generate a custom invoice calculation.
+                  Select specific orders directly across brands with multi-status filtering to generate a custom invoice calculation.
                 </p>
               </div>
               <div className="mt-4 flex items-center text-xs font-semibold text-primary">
@@ -302,7 +341,8 @@ export function GenerateInvoiceModal({
       {/* STEP 2B: GENERATE BY ORDERS */}
       {step === "by_orders" && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* Search Box */}
             <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded border border-line bg-surface px-3 py-1.5 text-xs">
               <Search className="h-3.5 w-3.5 text-muted shrink-0" />
               <input
@@ -313,17 +353,126 @@ export function GenerateInvoiceModal({
                 className="w-full bg-transparent text-ink placeholder:text-muted focus:outline-none"
               />
             </div>
+
+            {/* Multi-Status Filter Dropdown Trigger */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowStatusFilterMenu((prev) => !prev)}
+                className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  selectedStatuses.length > 0
+                    ? "border-primary bg-primary-soft/50 text-primary"
+                    : "border-line bg-surface text-ink hover:bg-surface-hover"
+                }`}
+              >
+                <Filter className="h-3.5 w-3.5" />
+                <span>
+                  Status Filter{" "}
+                  {selectedStatuses.length > 0 ? `(${selectedStatuses.length} selected)` : "(All)"}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+
+              {/* Dropdown Menu */}
+              {showStatusFilterMenu && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-lg border border-line bg-surface p-3 shadow-lg">
+                  <div className="mb-2 flex items-center justify-between border-b border-line pb-2">
+                    <span className="text-xs font-semibold text-ink">Filter Statuses</span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedStatuses([])}
+                        className="text-[11px] font-medium text-muted hover:text-ink"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowStatusFilterMenu(false)}
+                        className="rounded p-0.5 text-muted hover:bg-surface-hover hover:text-ink"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-60 overflow-y-auto space-y-1 text-xs">
+                    {ALL_STATUS_OPTIONS.map((opt) => {
+                      const isChecked = selectedStatuses.includes(opt.value);
+                      return (
+                        <label
+                          key={opt.value}
+                          className="flex cursor-pointer items-center justify-between rounded px-2 py-1 transition-colors hover:bg-surface-hover"
+                        >
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleStatus(opt.value)}
+                              className="rounded border-line text-primary focus:ring-primary"
+                            />
+                            <span className="text-ink">{opt.label}</span>
+                          </div>
+                          <span className="text-[10px] text-muted">{opt.group}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-2 border-t border-line pt-2 text-right">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="w-full"
+                      onClick={() => setShowStatusFilterMenu(false)}
+                    >
+                      Apply Status Filter ({selectedStatuses.length === 0 ? "All" : selectedStatuses.length})
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <Button size="sm" variant="ghost" onClick={() => setStep("choose")}>
               &larr; Back
             </Button>
           </div>
+
+          {/* Active Status Badges */}
+          {selectedStatuses.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs bg-surface-hover/30 p-2 rounded border border-line">
+              <span className="text-muted text-[11px] font-medium mr-1">Filtered by:</span>
+              {selectedStatuses.map((st) => (
+                <span
+                  key={st}
+                  className="inline-flex items-center gap-1 rounded bg-primary-soft/60 px-2 py-0.5 text-[11px] font-medium text-primary"
+                >
+                  {STATUS[st]?.label || st}
+                  <button
+                    type="button"
+                    onClick={() => toggleStatus(st)}
+                    className="hover:text-ink"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+              <button
+                type="button"
+                onClick={() => setSelectedStatuses([])}
+                className="ml-auto text-[11px] font-medium text-muted hover:text-ink underline"
+              >
+                Clear all filters
+              </button>
+            </div>
+          )}
 
           {ordersQuery.isLoading ? (
             <div className="py-12 text-center">
               <Spinner />
             </div>
           ) : allOrders.length === 0 ? (
-            <p className="py-8 text-center text-xs text-muted">No orders found.</p>
+            <p className="py-8 text-center text-xs text-muted">No orders matching the selected status filters.</p>
           ) : (
             <div className="max-h-[360px] overflow-y-auto rounded border border-line">
               <table className="w-full text-xs">
@@ -374,7 +523,11 @@ export function GenerateInvoiceModal({
                         </td>
                         <td className="text-muted">{fmtDate(o.order_date)}</td>
                         <td className="text-right font-medium">{fmtMoney(val, "PKR")}</td>
-                        <td className="text-muted">{o.status}</td>
+                        <td>
+                          <span className="inline-flex rounded-full bg-surface-hover px-2 py-0.5 text-[10px] font-medium text-ink">
+                            {STATUS[o.status as OrderStatus]?.label || o.status}
+                          </span>
+                        </td>
                       </tr>
                     );
                   })}
