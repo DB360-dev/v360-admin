@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Eye, FileText, Printer } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { useMoneySettings, useOrderList } from "@/hooks/useData";
+import { useMoneySettings } from "@/hooks/useData";
 import { fmtDate } from "@/lib/format";
 import { SHIPMENT_STATUS } from "@/lib/status";
 import type { Order, OrderItem, ShipmentOverview } from "@/lib/types";
@@ -13,7 +13,9 @@ import { Spinner } from "@/components/ui/States";
 interface KbbInvoiceDialogProps {
   open: boolean;
   onClose: () => void;
-  shipment: ShipmentOverview | null;
+  shipment?: ShipmentOverview | null;
+  shipments?: ShipmentOverview[];
+  orderIds?: string[];
   initialMode?: "summary" | "detail";
 }
 
@@ -21,7 +23,14 @@ function fmtNum(val: number): string {
   return Math.round(val).toLocaleString("en-US");
 }
 
-export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detail" }: KbbInvoiceDialogProps) {
+export function KbbInvoiceDialog({
+  open,
+  onClose,
+  shipment,
+  shipments,
+  orderIds,
+  initialMode = "detail",
+}: KbbInvoiceDialogProps) {
   const printRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<"summary" | "detail">(initialMode);
 
@@ -32,22 +41,34 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
   }, [open, initialMode]);
 
   const moneySettings = useMoneySettings();
-  const orders = useOrderList({
-    statuses: null,
-    shipmentId: shipment?.id,
-    limit: 500,
-  });
 
-  // Fetch full orders with order_items for Page 2
+  // Consolidate target shipments array
+  const targetShipments = useMemo(() => {
+    if (shipments && shipments.length > 0) return shipments;
+    if (shipment) return [shipment];
+    return [];
+  }, [shipment, shipments]);
+
+  const shipmentIds = useMemo(() => targetShipments.map((s) => s.id), [targetShipments]);
+
+  // Fetch full orders with order_items for selected shipments or orderIds
   const shipmentFullOrdersQuery = useQuery({
-    queryKey: ["shipment-full-orders", shipment?.id],
-    enabled: open && !!shipment?.id,
+    queryKey: ["invoice-full-orders", shipmentIds, orderIds],
+    enabled: open && (shipmentIds.length > 0 || (!!orderIds && orderIds.length > 0)),
     queryFn: async () => {
-      const { data, error } = await supabase
+      let q = supabase
         .from("orders")
-        .select("*, brand:organizations(name), order_items(*)")
-        .eq("shipment_id", shipment!.id)
-        .order("order_number");
+        .select("*, brand:organizations(name), order_items(*)");
+
+      if (shipmentIds.length > 0) {
+        q = q.in("shipment_id", shipmentIds);
+      } else if (orderIds && orderIds.length > 0) {
+        q = q.in("id", orderIds);
+      } else {
+        return [];
+      }
+
+      const { data, error } = await q.order("order_number");
       if (error) throw error;
       return (data ?? []) as (Order & { brand: { name: string } | null; order_items: OrderItem[] })[];
     },
@@ -92,28 +113,29 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
     return Array.from(map.values());
   }, [shipmentFullOrdersQuery.data]);
 
-  if (!shipment) return null;
-
   const defaultKbbPct = moneySettings.data?.kbb_commission_pct ?? 8;
   const companyName = moneySettings.data?.invoice_company_name ?? "V360 Logistics Ltd.";
 
-  // Group shipment orders by brand for Table 1 & 2
-  const shipmentOrders = orders.data?.rows ?? [];
-  const brandMap = new Map<string, { brand_id: string; brand_name: string; orderCount: number; orderValue: number }>();
+  // Calculate brand-wise summary rows from fetched full orders
+  const fullOrdersList = shipmentFullOrdersQuery.data ?? [];
 
-  for (const o of shipmentOrders) {
+  const brandSummaryMap = new Map<string, { brandId: string; brandName: string; orderCount: number; orderValue: number }>();
+  for (const o of fullOrdersList) {
     const val = o.cod_amount_expected !== null && o.cod_amount_expected !== undefined && o.cod_amount_expected > 0
       ? Number(o.cod_amount_expected)
       : Number(o.order_total || 0);
 
-    const existing = brandMap.get(o.brand_id);
+    const bId = o.brand_id;
+    const bName = o.brand?.name || "Unknown Brand";
+
+    const existing = brandSummaryMap.get(bId);
     if (existing) {
       existing.orderValue += val;
       existing.orderCount += 1;
     } else {
-      brandMap.set(o.brand_id, {
-        brand_id: o.brand_id,
-        brand_name: o.brand_name || "Unknown Brand",
+      brandSummaryMap.set(bId, {
+        brandId: bId,
+        brandName: bName,
         orderCount: 1,
         orderValue: val,
       });
@@ -121,16 +143,16 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
   }
 
   // Calculate brand-wise breakdown rows
-  const brandBreakdownRows = Array.from(brandMap.values()).map((b) => {
-    const kbbPct = brandSettingsQuery.data?.[b.brand_id] ?? defaultKbbPct;
+  const brandBreakdownRows = Array.from(brandSummaryMap.values()).map((b) => {
+    const kbbPct = brandSettingsQuery.data?.[b.brandId] ?? defaultKbbPct;
     const kbbCommission = (b.orderValue * kbbPct) / 100;
     const advance50 = 0.5 * b.orderValue;
     const netRemaining = advance50 - kbbCommission;
     const totalBrandPayable = advance50 + netRemaining;
 
     return {
-      brandId: b.brand_id,
-      brandName: b.brand_name,
+      brandId: b.brandId,
+      brandName: b.brandName,
       orderCount: b.orderCount,
       orderValue: b.orderValue,
       kbbPct,
@@ -149,17 +171,45 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
   const totalNetRemaining = brandBreakdownRows.reduce((acc, r) => acc + r.netRemaining, 0);
   const totalOverallPayable = brandBreakdownRows.reduce((acc, r) => acc + r.totalBrandPayable, 0);
 
-  const issueDate = shipment.dispatched_at
-    ? fmtDate(shipment.dispatched_at)
-    : fmtDate(shipment.created_at);
+  // Metadata labels
+  let invoiceNumber = "INV-KBB-GEN";
+  let shipmentRefLabel = "Custom Selection";
+  let routeLabel = "PK -> BD";
+  let carrierLabel = "Logistics Carrier";
+  let trackingLabel = "Multi-Tracking";
+  let statusLabelText = "Invoice Generated";
+  let issueDate = fmtDate(new Date().toISOString());
 
-  const statusLabel = SHIPMENT_STATUS[shipment.status]?.label || shipment.status;
+  if (targetShipments.length === 1) {
+    const s = targetShipments[0];
+    invoiceNumber = `INV-KBB-${s.code}`;
+    shipmentRefLabel = s.code;
+    routeLabel = `${s.origin} -> ${s.destination}`;
+    carrierLabel = s.shipping_partner || "Carrier N/A";
+    trackingLabel = s.tracking_number || "Pending";
+    statusLabelText = SHIPMENT_STATUS[s.status]?.label || s.status;
+    issueDate = s.dispatched_at ? fmtDate(s.dispatched_at) : fmtDate(s.created_at);
+  } else if (targetShipments.length > 1) {
+    invoiceNumber = `INV-KBB-MULTI-${targetShipments.length}`;
+    shipmentRefLabel = targetShipments.map((s) => s.code).join(", ");
+    routeLabel = "Multi-Shipment (PK -> BD)";
+    carrierLabel = "Consolidated Shipments";
+    trackingLabel = `${targetShipments.length} Shipments`;
+    statusLabelText = "Consolidated Invoice";
+  } else if (orderIds && orderIds.length > 0) {
+    invoiceNumber = `INV-KBB-ORD-${orderIds.length}`;
+    shipmentRefLabel = `${orderIds.length} Custom Orders`;
+    routeLabel = "Direct Order Selection";
+    carrierLabel = "Order Invoice";
+    trackingLabel = `${totalOrderCount} Orders`;
+    statusLabelText = "Order-based Invoice";
+  }
 
   const handlePrint = () => {
     window.print();
   };
 
-  const isLoading = orders.isLoading || moneySettings.isLoading || brandSettingsQuery.isLoading || shipmentFullOrdersQuery.isLoading;
+  const isLoading = moneySettings.isLoading || brandSettingsQuery.isLoading || shipmentFullOrdersQuery.isLoading;
 
   return (
     <Dialog
@@ -283,7 +333,7 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
                     DISPATCH ADVANCE INVOICE
                   </span>
                   <p className="mt-2 text-xs text-slate-600">
-                    Invoice #: <strong className="text-slate-900">INV-KBB-{shipment.code}</strong>
+                    Invoice #: <strong className="text-slate-900">{invoiceNumber}</strong>
                   </p>
                   <p className="text-xs text-slate-600">
                     Date: <strong className="text-slate-900">{issueDate}</strong>
@@ -300,18 +350,18 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
                 </div>
                 <div>
                   <span className="block font-bold uppercase text-slate-500 text-[10px]">Shipment Ref</span>
-                  <p className="mt-0.5 font-bold text-slate-900">{shipment.code}</p>
-                  <p className="text-slate-600">{shipment.order_count} Orders</p>
+                  <p className="mt-0.5 font-bold text-slate-900 truncate" title={shipmentRefLabel}>{shipmentRefLabel}</p>
+                  <p className="text-slate-600">{totalOrderCount} Orders</p>
                 </div>
                 <div>
                   <span className="block font-bold uppercase text-slate-500 text-[10px]">Route</span>
-                  <p className="mt-0.5 font-bold text-slate-900">{shipment.origin} &rarr; {shipment.destination}</p>
-                  <p className="text-slate-600">{shipment.shipping_partner || "Carrier N/A"}</p>
+                  <p className="mt-0.5 font-bold text-slate-900">{routeLabel}</p>
+                  <p className="text-slate-600">{carrierLabel}</p>
                 </div>
                 <div>
                   <span className="block font-bold uppercase text-slate-500 text-[10px]">Tracking</span>
-                  <p className="mt-0.5 font-bold text-slate-900">{shipment.tracking_number || "Pending"}</p>
-                  <p className="text-slate-600">Status: {statusLabel}</p>
+                  <p className="mt-0.5 font-bold text-slate-900 truncate" title={trackingLabel}>{trackingLabel}</p>
+                  <p className="text-slate-600">Status: {statusLabelText}</p>
                 </div>
               </div>
 
@@ -463,12 +513,12 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
                 <ul className="mt-1 list-disc pl-4 space-y-0.5 text-slate-600">
                   <li>50% Advance on Dispatch ({fmtNum(totalAdvance50)} PKR) is payable immediately upon shipment departure.</li>
                   <li>Net Remaining Payable after COD ({fmtNum(totalNetRemaining)} PKR) is settled upon customer delivery.</li>
-                  <li>Payment Reference: <strong className="text-slate-900">INV-KBB-{shipment.code}</strong>.</li>
+                  <li>Payment Reference: <strong className="text-slate-900">{invoiceNumber}</strong>.</li>
                 </ul>
               </div>
             </div>
 
-            {/* ==================== PAGE 2: BRAND-BY-BRAND ITEM BREAKDOWN (Rendered in Detail Mode or Print Mode) ==================== */}
+            {/* ==================== PAGE 2: BRAND-BY-BRAND ITEM BREAKDOWN ==================== */}
             {(mode === "detail" || (typeof window !== "undefined" && window.matchMedia("print").matches)) && (
               <div className="page-break-before mt-12 pt-6 border-t border-slate-300">
                 {/* Page 2 Header */}
@@ -482,13 +532,13 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
                     </p>
                   </div>
                   <div className="text-right text-xs text-slate-600">
-                    <p>Invoice Ref: <strong className="text-slate-900">INV-KBB-{shipment.code}</strong></p>
+                    <p>Invoice Ref: <strong className="text-slate-900">{invoiceNumber}</strong></p>
                     <p className="mt-0.5 font-semibold text-slate-700">Page 2 of 2</p>
                   </div>
                 </div>
 
                 {fullOrdersByBrand.length === 0 ? (
-                  <p className="text-xs text-slate-500 italic py-4">No order items found in this shipment.</p>
+                  <p className="text-xs text-slate-500 italic py-4">No order items found in this selection.</p>
                 ) : (
                   fullOrdersByBrand.map((brandGroup) => {
                     let brandItemQtySum = 0;
@@ -536,7 +586,7 @@ export function KbbInvoiceDialog({ open, onClose, shipment, initialMode = "detai
                         <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-3 bg-slate-100 -mx-4 -mt-4 p-4 rounded-t-lg">
                           <div>
                             <h3 className="text-base font-bold text-slate-900">{brandGroup.brandName}</h3>
-                            <p className="text-xs text-slate-600">{brandGroup.orders.length} Order(s) in Shipment</p>
+                            <p className="text-xs text-slate-600">{brandGroup.orders.length} Order(s) in Selection</p>
                           </div>
                           <div className="text-right">
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">

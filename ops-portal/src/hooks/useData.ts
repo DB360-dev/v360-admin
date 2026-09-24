@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { describeError, describeFunctionError } from "@/lib/errors";
 import type {
-  BrandMoneySettings, BrandPayable, BrandRow, FxRate, InboundBatchAdmin, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
+  BrandMoneySettings, BrandPayable, BrandRow, FxRate, InboundBatchAdmin, InvoicePaymentStatus, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
   OrderEvent, OrderItem, OrderMessage, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
   ShipmentEvent, ShipmentOverview, ShipmentStatus, StatusTransition, TeamMember, WebhookEvent,
 } from "@/lib/types";
@@ -579,6 +579,11 @@ export const useRecordKbbPayment = (o?: ActionOptions) => useOpsAction(
       p_shipment_id: v.shipmentId ?? null, p_order_id: v.orderId ?? null, p_note: trimOrNull(v.note),
     }),
   "Payment recorded", o);
+
+export const useUpdateInvoicePaymentStatus = (o?: ActionOptions) => useOpsAction(
+  (v: { shipmentId: string; status: InvoicePaymentStatus }) =>
+    rpc("set_shipment_invoice_payment_status", { p_shipment_id: v.shipmentId, p_status: v.status }),
+  "Invoice payment status updated", o);
 
 export const useCreateSettlement = (o?: ActionOptions) => useOpsAction(
   (v: { brandId: string; periodStart?: string | null; periodEnd?: string | null }) =>

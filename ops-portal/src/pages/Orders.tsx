@@ -16,6 +16,20 @@ function useDebounced<T>(value: T, ms = 300) {
   return v;
 }
 
+function invoicePaymentPill(o: OrderOverview): { label: string; group: StatusGroup } | null {
+  if (!o.shipment_id) return null;
+  const status = o.shipment_invoice_payment_status || "not_paid";
+  switch (status) {
+    case "paid":
+      return { label: "Paid", group: "done" };
+    case "partially_paid":
+      return { label: "Partially paid", group: "kbb" };
+    case "not_paid":
+    default:
+      return { label: "Unpaid", group: "problem" };
+  }
+}
+
 export function where(o: OrderOverview): string {
   if (o.delivery_tracking_number) return `${o.delivery_courier ?? ""} ${o.delivery_tracking_number}`.trim();
   if (o.shipment_code) return `${o.shipment_code}${o.shipment_tracking ? `, ${o.shipment_tracking}` : ""}`;
@@ -189,33 +203,44 @@ export function Orders() {
                 <th>Date</th>
                 <th>Customer</th>
                 <th className="text-right">COD</th>
+                <th>Invoice</th>
                 <th>Fulfilment status</th>
                 <th>Brand status</th>
                 <th>Master status</th>
                 <th>Where</th>
               </tr>
             </thead>
-            {q.isLoading ? <SkeletonRows cols={9} /> : (
+            {q.isLoading ? <SkeletonRows cols={10} /> : (
               <tbody className={`table-body ${q.isFetching ? "opacity-70" : ""}`}>
-                {rows.map((o) => (
-                  <tr key={o.id} onClick={() => navigate(`/orders/${o.id}`)} className="cursor-pointer hover:bg-sunken/50">
-                    <td><Link to={`/orders/${o.id}`} onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline">{o.order_number}</Link>
-                    {o.skus && <div className="truncate text-[12px] text-faint">{o.skus}</div>}</td>
-                    <td className="max-w-[160px] truncate">{o.brand_name}</td>
-                    <td className="whitespace-nowrap text-muted">{fmtShort(o.order_date)}</td>
-                    <td><div className="max-w-[200px] truncate">{o.customer_name ?? "—"}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>
-                    <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>
-                    <td><Pill {...fulfilmentStatus(o)} /></td>
-                    <td><Pill {...brandStatus(o)} /></td>
-                    <td>
-                      <div className="flex items-center gap-2">
-                        <Pill {...masterStatus(o)} />
-                        <span className="text-[12.5px] text-muted">{since(o.status_changed_at || o.order_date)}</span>
-                      </div>
-                    </td>
-                    <td className="max-w-[180px] truncate text-muted">{where(o)}</td>
-                  </tr>
-                ))}
+                {rows.map((o) => {
+                  const invPill = invoicePaymentPill(o);
+                  return (
+                    <tr key={o.id} onClick={() => navigate(`/orders/${o.id}`)} className="cursor-pointer hover:bg-sunken/50">
+                      <td><Link to={`/orders/${o.id}`} onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline">{o.order_number}</Link>
+                      {o.skus && <div className="truncate text-[12px] text-faint">{o.skus}</div>}</td>
+                      <td className="max-w-[160px] truncate">{o.brand_name}</td>
+                      <td className="whitespace-nowrap text-muted">{fmtShort(o.order_date)}</td>
+                      <td><div className="max-w-[200px] truncate">{o.customer_name ?? "—"}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>
+                      <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>
+                      <td>
+                        {invPill ? (
+                          <Pill {...invPill} />
+                        ) : (
+                          <span className="text-[12px] text-faint">—</span>
+                        )}
+                      </td>
+                      <td><Pill {...fulfilmentStatus(o)} /></td>
+                      <td><Pill {...brandStatus(o)} /></td>
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <Pill {...masterStatus(o)} />
+                          <span className="text-[12.5px] text-muted">{since(o.status_changed_at || o.order_date)}</span>
+                        </div>
+                      </td>
+                      <td className="max-w-[180px] truncate text-muted">{where(o)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             )}
           </table>

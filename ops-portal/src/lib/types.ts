@@ -74,6 +74,8 @@ export interface OrderMessage {
   created_at: string;
 }
 
+export type InvoicePaymentStatus = "not_paid" | "partially_paid" | "paid";
+
 export interface OrderOverview {
   id: string; order_number: string; order_date: string; status: OrderStatus; status_changed_at: string;
   brand_id: string; brand_name: string; customer_name: string | null; customer_phone: string | null; city: string | null;
@@ -83,6 +85,7 @@ export interface OrderOverview {
   delivery_courier: string | null; delivery_tracking_number: string | null; delivered_at: string | null; item_count: number;
   skus: string | null;
   shipment_id: string | null; inbound_batch_id: string | null;
+  shipment_invoice_payment_status?: InvoicePaymentStatus | null;
 }
 
 export interface ShopifyConnection {
@@ -97,6 +100,7 @@ export interface InboundBatchAdmin extends InboundBatchOverview { brand_name: st
 export interface ShipmentOverview {
   id: string; code: string; shipping_partner: string | null; tracking_number: string | null;
   origin: string; destination: string; total_weight_kg: number | null; status: ShipmentStatus; notes: string | null;
+  invoice_payment_status?: InvoicePaymentStatus;
   created_at: string; dispatched_at: string | null; received_at: string | null;
   order_count: number; brand_count: number; cod_expected: number;
 }
