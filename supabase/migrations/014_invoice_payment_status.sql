@@ -15,8 +15,12 @@ end $$;
 alter table shipments 
   add column if not exists invoice_payment_status invoice_payment_status not null default 'not_paid';
 
--- 3. Recreate shipment_overview view to include invoice_payment_status
-create or replace view shipment_overview with (security_invoker = true) as
+-- 3. Drop existing views so PostgreSQL allows column additions/reordering
+drop view if exists order_overview cascade;
+drop view if exists shipment_overview cascade;
+
+-- 4. Recreate shipment_overview view to include invoice_payment_status
+create view shipment_overview with (security_invoker = true) as
 select
   s.id, s.code, s.shipping_partner, s.tracking_number, s.origin, s.destination, s.total_weight_kg,
   s.status, s.invoice_payment_status, s.notes, s.created_at, s.dispatched_at, s.received_at,
@@ -27,8 +31,8 @@ from shipments s
 left join orders o on o.shipment_id = s.id
 group by s.id;
 
--- 4. Recreate order_overview view to include shipment_invoice_payment_status
-create or replace view order_overview with (security_invoker = true) as
+-- 5. Recreate order_overview view to include shipment_invoice_payment_status
+create view order_overview with (security_invoker = true) as
 select
   o.id, o.order_number, o.shopify_order_id, o.order_date, o.status, o.status_changed_at,
   o.brand_id, b.name as brand_name,
@@ -47,7 +51,11 @@ join organizations b on b.id = o.brand_id
 left join inbound_batches ib on ib.id = o.inbound_batch_id
 left join shipments s on s.id = o.shipment_id;
 
--- 5. RPC function to update shipment invoice payment status safely from frontend
+-- 6. Grant select permissions on updated views
+grant select on shipment_overview to authenticated;
+grant select on order_overview to authenticated;
+
+-- 7. RPC function to update shipment invoice payment status safely from frontend
 create or replace function set_shipment_invoice_payment_status(
   p_shipment_id uuid,
   p_status invoice_payment_status
@@ -67,6 +75,7 @@ begin
   end if;
 end $$;
 
--- 6. Privileges
+-- 8. Privileges for RPC function
 revoke execute on function set_shipment_invoice_payment_status(uuid, invoice_payment_status) from public, anon;
 grant execute on function set_shipment_invoice_payment_status(uuid, invoice_payment_status) to authenticated;
+
