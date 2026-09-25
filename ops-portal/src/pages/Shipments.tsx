@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Boxes, Plus, Ship } from "lucide-react";
+import { Boxes, Ship } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
-import { useCreateShipment, useCreateShipmentWithOrders, useOrderList, useShipments } from "@/hooks/useData";
+import { useCreateShipmentWithOrders, useOrderList, useShipments } from "@/hooks/useData";
 import { SHIPMENT_STATUS } from "@/lib/status";
 import { fmtDateTime, fmtMoney, plural } from "@/lib/format";
 import { describeError } from "@/lib/errors";
@@ -11,7 +11,6 @@ import { Pill } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { TextArea, TextField } from "@/components/ui/Field";
-import { ActionDialog } from "@/components/ActionDialog";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
 
 /** Order-driven shipment builder: pick ready orders, create the shipment in one go. */
@@ -256,10 +255,6 @@ export function Shipments() {
   const navigate = useNavigate();
   const [scope, setScope] = useState<"active" | "all">("active");
   const q = useShipments(scope);
-  const create = useCreateShipment({ inlineErrors: true });
-  const [creating, setCreating] = useState(false);
-  const [partner, setPartner] = useState("");
-
   return (
     <>
       <PageHeader
@@ -271,7 +266,6 @@ export function Shipments() {
               <button key={k} role="radio" aria-checked={scope === k} onClick={() => setScope(k)} className={`rounded-[4px] px-3 py-1 ${scope === k ? "bg-sunken font-medium" : "text-muted"}`}>{l}</button>
             ))}
           </div>
-          {isV360 && <Button variant="primary" onClick={() => { create.reset(); setPartner(""); setCreating(true); }}><Plus className="h-4 w-4" /> New shipment</Button>}
         </>} />
 
       {isV360 && <ShipmentBuilder onCreated={(id) => navigate(`/shipments/${id}`)} />}
@@ -306,13 +300,6 @@ export function Shipments() {
           </EmptyState>
         )}
       </div>
-
-      <ActionDialog open={creating} onClose={() => setCreating(false)} busy={create.isPending} error={create.error ? describeError(create.error) : null}
-        title="New shipment" description="It starts as a draft. Add ready orders next, then set tracking and dispatch it."
-        confirmLabel="Create shipment" noteLabel="Notes"
-        onConfirm={(notes) => create.mutate({ partner, notes }, { onSuccess: (id) => { setCreating(false); navigate(`/shipments/${id}`); } })}>
-        <TextField label="Shipping partner" optional list="carriers" value={partner} onChange={(e) => setPartner(e.target.value)} autoFocus />
-      </ActionDialog>
     </>
   );
 }

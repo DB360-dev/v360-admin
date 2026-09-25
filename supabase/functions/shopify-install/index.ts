@@ -2,7 +2,7 @@
 // Called by the Brand Portal (signed-in brand owner) with { brand_id, shop }.
 // Returns { url } — the Shopify page where the merchant approves the app.
 //
-// Secrets: SHOPIFY_API_KEY (client id), optional SHOPIFY_SCOPES (default read_orders),
+// Secrets: SHOPIFY_API_KEY (client id), optional SHOPIFY_SCOPES (default: read/write orders + write fulfillments),
 //          optional ALLOWED_ORIGINS. SUPABASE_* are provided automatically.
 //          Client ID is read from Vault (Admin panel) first, then env.
 
@@ -13,7 +13,8 @@ import { getShopifyCreds } from "../_shared/shopifyCreds.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SCOPES = Deno.env.get("SHOPIFY_SCOPES") ?? "read_orders";
+const SCOPES = Deno.env.get("SHOPIFY_SCOPES") ??
+  "read_orders,write_orders,write_merchant_managed_fulfillment_orders,write_assigned_fulfillment_orders,write_third_party_fulfillment_orders";
 
 const SHOP_RE = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
 

@@ -47,6 +47,8 @@ export const GROUP_CLASSES: Record<StatusGroup, { text: string; bg: string; dot:
 
 export const CONFIRM_QUEUE: OrderStatus[] = ["new", "confirmation_pending", "customer_unreachable"];
 export const DELIVERY_QUEUE: OrderStatus[] = ["received_by_partner", "preparing_for_delivery", "out_for_delivery", "delivery_failed"];
+export const RETURNED_DISCREPANCY_LABEL = "Returned due to discrepancy";
+
 export const TERMINAL: OrderStatus[] = ["delivered", "cancelled", "returned"];
 /** Statuses set only by their own dedicated action, never by the generic status buttons. */
 export const DEDICATED: OrderStatus[] = ["dispatched_to_hub", "received_at_hub", "hub_issue", "assigned_to_shipment",
@@ -134,7 +136,7 @@ export const INBOUND_STATUS: Record<InboundStatus, { label: string; group: Statu
 };
 
 export const RETURN_DISPOSITION: Record<string, string> = {
-  pending: "Decision pending", restock_in_bd: "Restock in Bangladesh", return_to_pk: "Return to Pakistan", written_off: "Written off",
+  pending: "Decision pending", restock_in_bd: "Restock in Bangladesh", return_to_pk: "Return to Pakistan", return_to_brand: "Return to brand", written_off: "Written off",
 };
 
 export const ROLE_LABEL: Record<string, string> = {

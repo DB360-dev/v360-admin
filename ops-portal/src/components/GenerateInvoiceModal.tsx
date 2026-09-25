@@ -67,7 +67,7 @@ export function GenerateInvoiceModal({
 
   const ordersQuery = useOrderList({
     statuses: targetInvoiceType === "final_settlement"
-      ? ["delivered", "returned", "delivery_failed"]
+      ? ["delivered", "returned", "delivery_failed", "cancelled"]
       : (selectedStatuses.length > 0 ? selectedStatuses : null),
     search: orderSearch || undefined,
     limit: 500,
@@ -143,7 +143,9 @@ export function GenerateInvoiceModal({
         if (payStatus === "paid") return false;
         if (payStatus !== "partially_paid") return false;
 
-        const isDeliveredOrReturned = ["delivered", "returned", "delivery_failed"].includes(o.status);
+        // Cancelled after dispatch counts as a return (only dispatched orders have a paid advance).
+        const isDeliveredOrReturned = ["delivered", "returned", "delivery_failed"].includes(o.status)
+          || (o.status === "cancelled" && !!o.shipment_id);
         if (!isDeliveredOrReturned) return false;
 
         return true;

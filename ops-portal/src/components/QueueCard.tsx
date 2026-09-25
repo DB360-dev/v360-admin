@@ -1,12 +1,13 @@
 import { Link } from "react-router-dom";
 import type { QueueOrder } from "@/hooks/useData";
-import { fmtMoney, since, daysSince } from "@/lib/format";
-import { StatusBadge } from "./ui/StatusBadge";
+import { fmtMoney, fmtShort, since, daysSince } from "@/lib/format";
+import { Pill, StatusBadge } from "./ui/StatusBadge";
+import { masterStatus } from "@/pages/Orders";
 import { OrderActions } from "./OrderActions";
 import { ContactLinks } from "@/pages/OrderDetail";
 
 /** One order in a work queue: everything needed to act without opening it. */
-export function QueueCard({ o, showItems = true }: { o: QueueOrder; showItems?: boolean }) {
+export function QueueCard({ o, showItems = true, showDateAndMaster = false }: { o: QueueOrder; showItems?: boolean; showDateAndMaster?: boolean }) {
   const waited = daysSince(o.status_changed_at);
   const items = o.order_items.reduce((n, i) => n + i.quantity, 0);
   return (
@@ -14,7 +15,10 @@ export function QueueCard({ o, showItems = true }: { o: QueueOrder; showItems?: 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2.5">
         <Link to={`/orders/${o.id}`} className="font-semibold hover:underline">{o.order_number}</Link>
         <span className="text-[13px] text-muted">{o.brand?.name}</span>
-        <StatusBadge status={o.status} />
+        {showDateAndMaster && <span className="text-[13px] text-muted" title="Order date">{fmtShort(o.order_date)}</span>}
+        {showDateAndMaster
+          ? <span className="flex items-center gap-1.5"><span className="text-[11px] uppercase tracking-wide text-faint">Master status</span><Pill {...masterStatus(o)} /></span>
+          : <StatusBadge status={o.status} />}
         {o.confirmation_attempts > 0 && <span className="text-[12.5px] text-muted">{o.confirmation_attempts} call attempt{o.confirmation_attempts > 1 ? "s" : ""}</span>}
         <span className={`ml-auto text-[12.5px] ${waited > 1 ? "font-semibold text-g-problem" : "text-faint"}`} title="Waiting in this step">waiting {since(o.status_changed_at)}</span>
       </div>

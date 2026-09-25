@@ -6,6 +6,7 @@ import { useMoneySettings, useSaveInvoice } from "@/hooks/useData";
 import { fmtDate } from "@/lib/format";
 import { SHIPMENT_STATUS, STATUS } from "@/lib/status";
 import type { Order, OrderItem, OrderStatus, ShipmentOverview } from "@/lib/types";
+import { bdQty } from "@/lib/items";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { Spinner } from "@/components/ui/States";
@@ -886,6 +887,7 @@ export function KbbInvoiceDialog({
                           status: order.status,
                           isReturned,
                           productName: "Order Total (No itemized SKUs)",
+                          bdUnits: 0,
                           sku: "—",
                           variant: "—",
                           unitPrice: Number(val),
@@ -904,6 +906,7 @@ export function KbbInvoiceDialog({
                           status: order.status,
                           isReturned,
                           productName: item.product_name,
+                          bdUnits: bdQty(item),
                           sku: item.sku || "—",
                           variant: item.variant || "—",
                           unitPrice: price,
@@ -966,6 +969,12 @@ export function KbbInvoiceDialog({
                                   </td>
                                   <td className="border border-slate-300 px-2.5 py-1.5 text-slate-800 font-medium">
                                     {row.productName}
+                                    {row.bdUnits > 0 && (
+                                      <div className="text-[10px] font-normal text-slate-500">
+                                        {row.bdUnits === row.quantity ? "All" : row.bdUnits} from Bangladesh stock
+                                        {row.bdUnits < row.quantity ? ` · ${row.quantity - row.bdUnits} shipped from Pakistan` : ""}
+                                      </div>
+                                    )}
                                   </td>
                                   <td className="border border-slate-300 px-2.5 py-1.5 text-slate-600 font-mono text-[11px]">
                                     {row.sku}

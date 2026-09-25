@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { describeError } from "@/lib/errors";
 import { DEDICATED, NOTE_REQUIRED, STATUS, TERMINAL } from "@/lib/status";
-import type { OrderItem, OrderStatus, Order } from "@/lib/types";
+import type { OrderItem, OrderStatus, Order, ShipmentStatus } from "@/lib/types";
 import { useOps } from "@/context/OpsContext";
 import {
   useChangeStatus, useHold, useOverride, useRemoveFromShipment, useResume, useTransitions,
@@ -30,7 +30,7 @@ const EDITABLE: OrderStatus[] = ["new", "confirmation_pending", "customer_unreac
 
 type Dlg =
   | { kind: "status"; to: OrderStatus }
-  | { kind: "hold" | "resume" | "override" | "remove" | "delivered" | "tracking" | "receive" | "edit" | "return" };
+  | { kind: "hold" | "resume" | "override" | "remove" | "delivered" | "tracking" | "ofd" | "receive" | "edit" | "return" };
 
 export function useAvailableTransitions(status: OrderStatus): OrderStatus[] {
   const { isV360 } = useOps();
@@ -75,6 +75,9 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
   const lastMile = ["received_by_partner", "preparing_for_delivery", "out_for_delivery", "delivery_failed"].includes(s);
   // items for hub receiving; also covers QueueOrder.order_items for return dialog
   const orderItems = items ?? (order as { order_items?: OrderItem[] }).order_items;
+  // Cancelled before its shipment was handed to the carrier: goods are still in Pakistan.
+  const shipmentStatus = (order as { shipment?: { status: ShipmentStatus } | null }).shipment?.status;
+  const inPakistan = s === "cancelled" && (!shipmentStatus || shipmentStatus === "draft" || shipmentStatus === "ready_for_dispatch");
   // In compact last-mile view, Return moves to the actions group — remove it from status buttons
   const sorted = [...moves]
     .filter((t) => !(compact && lastMile && t === "returned"))
@@ -88,7 +91,7 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
     ),
     s === "hold" && <Button key="resume" size={size} variant="primary" onClick={() => open({ kind: "resume" })}>Resume</Button>,
     ...sorted.map((to) => (
-      <Button key={to} size={size} variant={PRIMARY.includes(to) ? "primary" : DANGER.includes(to) ? "danger-ghost" : "secondary"} onClick={() => open({ kind: "status", to })}>
+      <Button key={to} size={size} variant={PRIMARY.includes(to) ? "primary" : DANGER.includes(to) ? "danger-ghost" : "secondary"} onClick={() => open(to === "out_for_delivery" ? { kind: "ofd" } : { kind: "status", to })}>
         {VERB[to] ?? STATUS[to].label}
       </Button>
     )),
@@ -98,7 +101,7 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
   const actionChildren = [
     lastMile && <Button key="tracking" size={size} onClick={() => open({ kind: "tracking" })}>{order.delivery_tracking_number ? "Edit tracking" : "Add tracking"}</Button>,
     !compact && isV360 && s === "assigned_to_shipment" && <Button key="remove" size={size} onClick={() => open({ kind: "remove" })}>Remove from shipment</Button>,
-    !compact && isV360 && s === "returned" && (!order.return_disposition || order.return_disposition === "pending") && <Button key="return" size={size} onClick={() => open({ kind: "return" })}>Decide on return</Button>,
+    !compact && isV360 && (s === "returned" || (s === "cancelled" && !!order.inbound_batch_id)) && (!order.return_disposition || order.return_disposition === "pending") && <Button key="return" size={size} onClick={() => open({ kind: "return" })}>Decide on return</Button>,
     !compact && isV360 && EDITABLE.includes(s) && <Button key="edit" size={size} onClick={() => open({ kind: "edit" })}>Edit customer</Button>,
     (lastMile || !compact) && s !== "hold" && !TERMINAL.includes(s) && <Button key="hold" size={size} variant="ghost" onClick={() => open({ kind: "hold" })}>Hold</Button>,
     lastMile && moves.includes("returned") && <Button key="return-mark" size={size} variant="ghost" onClick={() => open({ kind: "status", to: "returned" })}>Return</Button>,
@@ -186,9 +189,10 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
       )}
       <DeliveredDialog order={order} open={dlg?.kind === "delivered"} onClose={close} />
       <TrackingDialog order={order} open={dlg?.kind === "tracking"} onClose={close} />
+      <TrackingDialog order={order} outForDelivery open={dlg?.kind === "ofd"} onClose={close} />
       {orderItems && <ReceiveDialog order={order} items={orderItems} open={dlg?.kind === "receive"} onClose={close} />}
       <EditCustomerDialog order={order} open={dlg?.kind === "edit"} onClose={close} />
-      <ReturnDialog order={order} items={orderItems} open={dlg?.kind === "return"} onClose={close} />
+      <ReturnDialog order={order} items={orderItems} inPakistan={inPakistan} open={dlg?.kind === "return"} onClose={close} />
     </>
   );
 }

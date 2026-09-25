@@ -30,6 +30,12 @@ export interface Order {
   confirmed_at: string | null; inbound_batch_id: string | null; received_at_hub_at: string | null; hub_notes: string | null;
   shipment_id: string | null; delivery_courier: string | null; delivery_tracking_number: string | null;
   delivered_at: string | null; failure_reason: string | null; return_disposition: string | null;
+  returned_due_to_discrepancy?: boolean;
+  delivery_tracking_url?: string | null;
+  /** Set by the shopify-fulfill Edge Function. */
+  shopify_fulfillment_id?: string | null; shopify_fulfilled_at?: string | null; shopify_fulfillment_error?: string | null;
+  /** Set by the shopify-payment-sync Edge Function. */
+  shopify_payment_synced?: "partially_paid" | "paid" | null; shopify_payment_synced_at?: string | null; shopify_payment_error?: string | null;
   shopify_cancelled_at: string | null; created_at: string;
   confirmed_by: string | null;
   brand_confirmed_at: string | null; brand_confirmed_by: string | null;
@@ -40,6 +46,8 @@ export interface OrderItem {
   quantity: number; unit_price: number; discount: number; received_quantity: number;
   return_disposition: ReturnDispositionValue | null;
   fulfilment_origin: FulfilmentOrigin | null;
+  /** Units the brand fulfilled from its Bangladesh stock at dispatch — never sent to the hub. */
+  inventory_qty: number | null;
 }
 
 export interface InboundBatch {
@@ -120,6 +128,8 @@ export interface OrderOverview {
   delivery_courier: string | null; delivery_tracking_number: string | null; delivered_at: string | null; item_count: number;
   skus: string | null;
   shipment_id: string | null; inbound_batch_id: string | null;
+  /** Auto-returned because KBB received less than was dispatched. */
+  returned_due_to_discrepancy?: boolean;
   shipment_invoice_payment_status?: InvoicePaymentStatus | null;
   invoice_payment_status?: InvoicePaymentStatus | null;
   is_settled?: boolean;
@@ -170,7 +180,7 @@ export interface WebhookEvent {
 
 export interface StatusTransition { from_status: OrderStatus; to_status: OrderStatus; actor: "partner" | "brand" | "v360" }
 
-export type ReturnDispositionValue = "pending" | "restock_in_bd" | "return_to_pk" | "written_off";
+export type ReturnDispositionValue = "pending" | "restock_in_bd" | "return_to_pk" | "return_to_brand" | "written_off";
 
 // ---------------------------------------------------------------- money
 
@@ -278,4 +288,19 @@ export interface ShipmentBrandWeight {
   fx_rate_date: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface BrandShippingInvoiceLine {
+  id: number; invoice_id: string; order_id: string; order_number: string; customer_name: string | null;
+  items_summary: string | null; pk_units: number; bd_units: number; weight_kg: number; amount_pkr: number;
+}
+
+/** Per-brand shipping charges for one shipment — Pakistan-fulfilled units only. */
+export interface BrandShippingInvoice {
+  id: string; invoice_number: string; shipment_id: string; brand_id: string;
+  order_count: number; pk_units: number; bd_units: number; weight_kg: number;
+  freight_bdt_per_kg: number; fx_rate: number; fx_rate_date: string; amount_pkr: number;
+  payment_status: InvoicePaymentStatus; paid_at: string | null; created_at: string; updated_at: string;
+  brand?: { name: string } | null;
+  shipment?: { code: string; shipping_partner: string | null; tracking_number: string | null; dispatched_at: string | null } | null;
 }

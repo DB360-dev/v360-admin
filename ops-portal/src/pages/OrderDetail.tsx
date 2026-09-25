@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, MessageCircle, MessageSquare, Phone } from "lucide-react";
-import { useBrandMoneySettings, useInvoicesList, useMoneySettings, useOrder, useOrderEvents, useOrderInternalNote, useOrderMessages, useSaveOrderInternalNote, useShipments } from "@/hooks/useData";
+import { useShopifyFulfill, useBrandMoneySettings, useInvoicesList, useMoneySettings, useOrder, useOrderEvents, useOrderInternalNote, useOrderMessages, useSaveOrderInternalNote, useShipments } from "@/hooks/useData";
 import { INBOUND_STATUS, PARTNER_STATUS_TRACK, RETURN_DISPOSITION, SHIPMENT_STATUS, STATUS, V360_STATUS_TRACK } from "@/lib/status";
 import { useOps } from "@/context/OpsContext";
 import { fmtDate, fmtDateTime, fmtMoney } from "@/lib/format";
@@ -180,6 +180,23 @@ function InternalNotes({ orderId, role }: { orderId: string; role: OrderNoteRole
   );
 }
 
+/** Result of pushing the delivery tracking to Shopify, with a retry. */
+function ShopifyFulfillment({ order, canRetry }: { order: OpsOrderDetail; canRetry: boolean }) {
+  const fulfill = useShopifyFulfill();
+  const retry = canRetry && order.delivery_tracking_number && (
+    <Button size="sm" variant="ghost" loading={fulfill.isPending} onClick={() => fulfill.mutate(order.id)}>
+      {order.shopify_fulfillment_id ? "Resend tracking" : "Retry"}
+    </Button>
+  );
+  if (order.shopify_fulfillment_error) {
+    return <div><span className="text-g-problem">Not updated: {order.shopify_fulfillment_error}</span> {retry}</div>;
+  }
+  if (order.shopify_fulfillment_id) {
+    return <div><span className="text-g-done">Fulfilled {fmtDateTime(order.shopify_fulfilled_at ?? null)}</span> {retry}</div>;
+  }
+  return <div><span className="text-muted">Not fulfilled yet</span> {retry}</div>;
+}
+
 export function OrderDetail() {
   const { id = "" } = useParams();
   const q = useOrder(id);
@@ -203,7 +220,7 @@ export function OrderDetail() {
       <header className="mb-4">
         <div className="flex flex-wrap items-center gap-3">
           <h1>{o.order_number}</h1>
-          <StatusBadge status={o.status} />
+          <StatusBadge status={o.status} discrepancy={o.returned_due_to_discrepancy} />
           {o.status === "hold" && o.previous_status && <span className="text-[13px] text-muted">paused at {STATUS[o.previous_status].label}</span>}
         </div>
         <p className="mt-1 text-[14px] text-muted">{o.brand?.name}, ordered {fmtDateTime(o.order_date)}</p>
@@ -303,7 +320,14 @@ export function OrderDetail() {
             </Section>
             <Section title="Delivery (KBB)">
               <Facts rows={[
-                ["Courier", o.delivery_courier], ["Tracking", o.delivery_tracking_number], ["Delivered", fmtDateTime(o.delivered_at)],
+                ["Courier", o.delivery_courier], ["Tracking", o.delivery_tracking_number],
+                ...(o.delivery_tracking_url ? [["Tracking link", <a key="tl" href={o.delivery_tracking_url} target="_blank" rel="noreferrer" className="link break-all">{o.delivery_tracking_url}</a>] as [string, ReactNode]] : []),
+                ...((o.shopify_fulfillment_id || o.shopify_fulfillment_error || ["out_for_delivery", "delivered", "delivery_failed"].includes(o.status))
+                  ? [["Shopify", <ShopifyFulfillment key="sf" order={o} canRetry={isV360 || isKbb} />] as [string, ReactNode]] : []),
+                ...((o.shopify_payment_synced || o.shopify_payment_error) ? [["Shopify payment", o.shopify_payment_error
+                  ? <span key="sp" className="text-g-problem">Not updated: {o.shopify_payment_error}</span>
+                  : <span key="sp" className="text-g-done">{o.shopify_payment_synced === "paid" ? "Paid" : "Partially paid"} {fmtDateTime(o.shopify_payment_synced_at ?? null)}</span>] as [string, ReactNode]] : []),
+                ["Delivered", fmtDateTime(o.delivered_at)],
                 ["Failure reason", o.failure_reason],
                 ...(o.return_disposition ? [["Return decision", RETURN_DISPOSITION[o.return_disposition] ?? o.return_disposition] as [string, ReactNode]] : []),
               ]} />

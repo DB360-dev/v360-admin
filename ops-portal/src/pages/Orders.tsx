@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Inbox, Search, StickyNote, X } from "lucide-react";
 import { PAGE_SIZE, useBrandOptions, useOrderList, useStatusCounts } from "@/hooks/useData";
-import { ORDER_VIEWS, STATUS, type StatusGroup } from "@/lib/status";
+import { ORDER_VIEWS, RETURNED_DISCREPANCY_LABEL, STATUS, type StatusGroup } from "@/lib/status";
 import { fmtMoney, fmtShort, since } from "@/lib/format";
 import type { OrderOverview, OrderStatus } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -64,7 +64,7 @@ export function fulfilmentStatus(o: OrderOverview): { label: string; group: Stat
     case "delivery_failed":
       return { label: "Delivery failed", group: "problem" };
     case "returned":
-      return { label: "Returned", group: "problem" };
+      return { label: o.returned_due_to_discrepancy ? RETURNED_DISCREPANCY_LABEL : "Returned", group: "problem" };
     case "cancelled":
       return { label: "Cancelled", group: "closed" };
     case "hold":
@@ -105,7 +105,7 @@ export function brandStatus(o: OrderOverview): { label: string; group: StatusGro
       return { label: "Cancelled", group: "closed" };
     case "delivery_failed":
     case "returned":
-      return { label: "Returned", group: "problem" };
+      return { label: o.returned_due_to_discrepancy ? RETURNED_DISCREPANCY_LABEL : "Returned", group: "problem" };
     case "hold":
       return { label: "On hold", group: "problem" };
     default:
@@ -113,7 +113,10 @@ export function brandStatus(o: OrderOverview): { label: string; group: StatusGro
   }
 }
 
-export function masterStatus(o: OrderOverview): { label: string; group: StatusGroup } {
+export function masterStatus(o: Pick<OrderOverview, "status" | "returned_due_to_discrepancy">): { label: string; group: StatusGroup } {
+  if (o.status === "returned" && o.returned_due_to_discrepancy) {
+    return { label: RETURNED_DISCREPANCY_LABEL, group: "problem" };
+  }
   if (o.status === "new" || o.status === "confirmation_pending" || o.status === "customer_unreachable") {
     return { label: "New", group: "kbb" };
   }

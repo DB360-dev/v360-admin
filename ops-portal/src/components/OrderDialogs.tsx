@@ -6,7 +6,8 @@ import { TextArea, TextField } from "./ui/Field";
 import { describeError } from "@/lib/errors";
 import { fmtMoney } from "@/lib/format";
 import type { Order, OrderItem, ReturnDispositionValue } from "@/lib/types";
-import { useMarkDelivered, useReceiveOrder, useReturnDisposition, useSetTracking, useUpdateOrderDetails } from "@/hooks/useData";
+import { bdQty, hubQty } from "@/lib/items";
+import { useMarkDelivered, useMarkOutForDelivery, useReceiveOrder, useReturnDisposition, useSetTracking, useShopifyFulfill, useUpdateOrderDetails } from "@/hooks/useData";
 
 interface Base { open: boolean; onClose: () => void }
 
@@ -50,29 +51,55 @@ export function DeliveredDialog({ order, open, onClose }: Base & { order: Order 
 }
 
 // ---------- Last-mile tracking ------------------------------------------
-export function TrackingDialog({ order, open, onClose }: Base & { order: Order }) {
-  const m = useSetTracking({ inlineErrors: true });
+/** Delivery tracking. With outForDelivery, also moves the order to "Out for delivery".
+ *  Once the order is out for delivery, the tracking is pushed to Shopify as a fulfillment. */
+export function TrackingDialog({ order, open, onClose, outForDelivery = false }: Base & { order: Order; outForDelivery?: boolean }) {
+  const save = useSetTracking({ inlineErrors: true });
+  const ofd = useMarkOutForDelivery({ inlineErrors: true });
+  const fulfill = useShopifyFulfill();
+  const m = outForDelivery ? ofd : save;
   const [courier, setCourier] = useState("");
   const [tracking, setTracking] = useState("");
-  const [errs, setErrs] = useState<{ c?: string; t?: string }>({});
-  useEffect(() => { if (open) { m.reset(); setCourier(order.delivery_courier ?? ""); setTracking(order.delivery_tracking_number ?? ""); setErrs({}); } }, [open]);
+  const [url, setUrl] = useState("");
+  const [note, setNote] = useState("");
+  const [errs, setErrs] = useState<{ c?: string; t?: string; u?: string }>({});
+  useEffect(() => {
+    if (open) {
+      save.reset(); ofd.reset();
+      setCourier(order.delivery_courier ?? ""); setTracking(order.delivery_tracking_number ?? "");
+      setUrl(order.delivery_tracking_url ?? ""); setNote(""); setErrs({});
+    }
+  }, [open]);
+  const done = () => {
+    onClose();
+    // Push to Shopify when the order is (now) out for delivery or later.
+    if (outForDelivery || ["out_for_delivery", "delivered", "delivery_failed"].includes(order.status)) fulfill.mutate(order.id);
+  };
   const submit = () => {
     const e: typeof errs = {};
     if (!courier.trim()) e.c = "Enter the courier";
     if (!tracking.trim()) e.t = "Enter the tracking number";
+    if (url.trim() && !/^https?:\/\/\S+$/i.test(url.trim())) e.u = "Enter a full link starting with https://";
     setErrs(e);
-    if (!Object.keys(e).length) m.mutate({ id: order.id, courier, tracking }, { onSuccess: onClose });
+    if (Object.keys(e).length) return;
+    if (outForDelivery) ofd.mutate({ id: order.id, courier, tracking, url, note }, { onSuccess: done });
+    else save.mutate({ id: order.id, courier, tracking, url }, { onSuccess: done });
   };
   return (
     <Dialog open={open} onClose={onClose} onSubmit={submit} busy={m.isPending} error={m.error ? describeError(m.error) : null} width="sm"
-      title={`Delivery tracking: ${order.order_number}`}
-      footer={<><Button onClick={onClose} disabled={m.isPending}>Cancel</Button><Button type="submit" variant="primary" loading={m.isPending}>Save</Button></>}>
+      title={outForDelivery ? `Out for delivery: ${order.order_number}` : `Delivery tracking: ${order.order_number}`}
+      description={outForDelivery ? "Add the courier's tracking. The customer's Shopify order is marked fulfilled with it." : undefined}
+      footer={<><Button onClick={onClose} disabled={m.isPending}>Cancel</Button>
+        <Button type="submit" variant="primary" loading={m.isPending}>{outForDelivery ? "Mark out for delivery" : "Save"}</Button></>}>
       <div className="space-y-4">
         <div>
           <TextField label="Courier" list="bd-couriers" value={courier} onChange={(e) => setCourier(e.target.value)} error={errs.c} autoFocus />
           <datalist id="bd-couriers">{["Steadfast", "Pathao", "RedX", "Paperfly", "eCourier", "Sundarban", "KBB rider"].map((c) => <option key={c} value={c} />)}</datalist>
         </div>
         <TextField label="Tracking number" value={tracking} onChange={(e) => setTracking(e.target.value)} error={errs.t} />
+        <TextField label="Tracking link" optional type="url" inputMode="url" placeholder="https://steadfast.com.bd/t/…"
+          value={url} onChange={(e) => setUrl(e.target.value)} error={errs.u} />
+        {outForDelivery && <TextArea label="Note" optional rows={2} value={note} onChange={(e) => setNote(e.target.value)} />}
       </div>
     </Dialog>
   );
@@ -81,8 +108,8 @@ export function TrackingDialog({ order, open, onClose }: Base & { order: Order }
 // ---------- Hub receiving ------------------------------------------------
 export function ReceiveDialog({ order, items, open, onClose }: Base & { order: Order; items: OrderItem[] }) {
   const m = useReceiveOrder({ inlineErrors: true });
-  const pkItems = items.filter((i) => (i.fulfilment_origin ?? "pakistan") !== "bangladesh");
-  const bdCount = items.length - pkItems.length;
+  const pkItems = items.filter((i) => hubQty(i) > 0);
+  const bdItems = items.filter((i) => bdQty(i) > 0);
   const [qty, setQty] = useState<Record<string, string>>({});
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
@@ -90,18 +117,19 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
   useEffect(() => {
     if (open) {
       m.reset();
-      setQty(Object.fromEntries(pkItems.map((i) => [i.id, String(i.quantity)])));
+      setQty(Object.fromEntries(pkItems.map((i) => [i.id, String(hubQty(i))])));
       setWeights(Object.fromEntries(pkItems.map((i) => [i.id, ""])));
       setNote("");
       setErr(null);
     }
   }, [open]);
 
-  const parsed = pkItems.map((i) => ({ i, n: Math.max(0, Math.min(i.quantity, Math.floor(Number(qty[i.id] ?? 0) || 0))) }));
-  const missing = parsed.filter(({ i, n }) => n < i.quantity);
+  // Counts are Pakistan units only; the server adds each line's BD-stock units on top.
+  const parsed = pkItems.map((i) => ({ i, exp: hubQty(i), n: Math.max(0, Math.min(hubQty(i), Math.floor(Number(qty[i.id] ?? 0) || 0))) }));
+  const missing = parsed.filter(({ exp, n }) => n < exp);
   const weightRows = pkItems.map((i) => ({ i, raw: (weights[i.id] ?? "").trim(), w: Number(weights[i.id]) }));
   const weightMissing = weightRows.some((r) => r.raw === "" || !Number.isFinite(r.w) || r.w <= 0);
-  const orderWeight = weightMissing ? null : weightRows.reduce((s, r) => s + r.w * r.i.quantity, 0);
+  const orderWeight = weightMissing ? null : weightRows.reduce((s, r) => s + r.w * hubQty(r.i), 0);
   const submit = () => {
     if (weightMissing) { setErr("Enter the weight (kg) of every item"); return; }
     setErr(null);
@@ -118,21 +146,26 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
           {missing.length ? "Record mismatch" : "All received"}
         </Button>
       </>}>
-      {bdCount > 0 && (
-        <p className="mb-3 rounded border border-line bg-sunken/40 px-3 py-2 text-[12.5px] text-muted">
-          {bdCount} SKU{bdCount > 1 ? "s" : ""} fulfilled locally in Bangladesh {bdCount > 1 ? "are" : "is"} excluded — {bdCount > 1 ? "they never reach" : "it never reaches"} the hub and aren't counted here.
-        </p>
+      {bdItems.length > 0 && (
+        <div className="mb-3 rounded border border-line bg-sunken/40 px-3 py-2 text-[12.5px] text-muted">
+          <p>Already in the brand's Bangladesh stock — these never reach the hub and aren't counted here:</p>
+          <ul className="mt-1 space-y-0.5">
+            {bdItems.map((i) => (
+              <li key={i.id}><span className="font-semibold text-ink">{bdQty(i)}×</span> {i.product_name}{i.variant ? `, ${i.variant}` : ""}</li>
+            ))}
+          </ul>
+        </div>
       )}
       <table className="w-full text-[13.5px]">
-        <thead className="table-head"><tr><th>Item</th><th className="text-right">Ordered</th><th className="w-28 text-right">Received</th><th className="w-28 text-right">Weight kg</th></tr></thead>
+        <thead className="table-head"><tr><th>Item</th><th className="text-right">From PK</th><th className="w-28 text-right">Received</th><th className="w-28 text-right">Weight kg</th></tr></thead>
         <tbody className="table-body">
-          {parsed.map(({ i, n }) => (
+          {parsed.map(({ i, exp, n }) => (
             <tr key={i.id}>
               <td><div className="font-medium">{i.product_name}</div><div className="text-[12.5px] text-muted">{[i.variant, i.sku].filter(Boolean).join(", ")}</div></td>
-              <td className="text-right">{i.quantity}</td>
+              <td className="text-right">{exp}{bdQty(i) > 0 && <div className="text-[11.5px] text-faint">of {i.quantity} ordered</div>}</td>
               <td className="text-right">
-                <input type="number" min={0} max={i.quantity} inputMode="numeric" aria-label={`Received quantity for ${i.product_name}`}
-                  className={`input h-8 w-20 text-right ${n < i.quantity ? "border-g-problem text-g-problem" : ""}`}
+                <input type="number" min={0} max={exp} inputMode="numeric" aria-label={`Received quantity for ${i.product_name}`}
+                  className={`input h-8 w-20 text-right ${n < exp ? "border-g-problem text-g-problem" : ""}`}
                   value={qty[i.id] ?? ""} onChange={(e) => setQty((s) => ({ ...s, [i.id]: e.target.value }))} />
               </td>
               <td className="text-right">
@@ -198,8 +231,15 @@ const DISP_OPTIONS: { value: ReturnDispositionValue; label: string }[] = [
   { value: "return_to_pk",  label: "Return to PK" },
   { value: "written_off",   label: "Write off" },
 ];
+// Cancelled before the shipment left Pakistan: the goods can only go back to the brand.
+const IN_PK_DISP_OPTIONS: { value: ReturnDispositionValue; label: string }[] = [
+  { value: "return_to_brand", label: "Return to brand" },
+  { value: "written_off",     label: "Write off" },
+];
 
-export function ReturnDialog({ order, items, open, onClose }: Base & { order: Order; items?: OrderItem[] }) {
+export function ReturnDialog({ order, items, open, onClose, inPakistan = false }: Base & { order: Order; items?: OrderItem[]; inPakistan?: boolean }) {
+  const options = inPakistan ? IN_PK_DISP_OPTIONS : DISP_OPTIONS;
+  const fallback = options[0].value;
   const m = useReturnDisposition({ inlineErrors: true });
   const [dispositions, setDispositions] = useState<Record<string, ReturnDispositionValue>>({});
   const [note, setNote] = useState("");
@@ -211,7 +251,7 @@ export function ReturnDialog({ order, items, open, onClose }: Base & { order: Or
       setDispositions(
         Object.fromEntries((items ?? []).map((i) => [
           i.id,
-          (i.return_disposition && i.return_disposition !== "pending" ? i.return_disposition : "restock_in_bd") as ReturnDispositionValue,
+          (options.some((o) => o.value === i.return_disposition) ? i.return_disposition : fallback) as ReturnDispositionValue,
         ]))
       );
     }
@@ -223,7 +263,7 @@ export function ReturnDialog({ order, items, open, onClose }: Base & { order: Or
   const submit = () => {
     const payload = (items ?? []).map((i) => ({
       order_item_id: i.id,
-      disposition: dispositions[i.id] ?? "restock_in_bd",
+      disposition: dispositions[i.id] ?? fallback,
     }));
     m.mutate({ id: order.id, items: payload, note }, { onSuccess: onClose });
   };
@@ -231,12 +271,12 @@ export function ReturnDialog({ order, items, open, onClose }: Base & { order: Or
   return (
     <Dialog open={open} onClose={onClose} onSubmit={submit} busy={m.isPending}
       error={m.error ? describeError(m.error) : null} width="md"
-      title={`Returned goods: ${order.order_number}`}
-      description="Choose what happens to each returned item."
+      title={`${order.status === "cancelled" ? "Cancelled" : "Returned"} goods: ${order.order_number}`}
+      description={inPakistan ? "Cancelled before it left Pakistan. Choose what happens to each item." : "Choose what happens to each returned item."}
       footer={<><Button onClick={onClose} disabled={m.isPending}>Cancel</Button><Button type="submit" variant="primary" loading={m.isPending}>Save decision</Button></>}>
       <div className="divide-y divide-line">
         {(items ?? []).map((item) => {
-          const cur = dispositions[item.id] ?? "restock_in_bd";
+          const cur = dispositions[item.id] ?? fallback;
           return (
             <div key={item.id} className="py-3 first:pt-0 last:pb-0">
               <div className="mb-2 flex items-baseline justify-between gap-2">
@@ -247,7 +287,7 @@ export function ReturnDialog({ order, items, open, onClose }: Base & { order: Or
                 <span className="shrink-0 text-[13px] text-muted">{item.quantity}×</span>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {DISP_OPTIONS.map(({ value, label }) => (
+                {options.map(({ value, label }) => (
                   <label key={value}
                     className={`flex cursor-pointer items-center gap-1.5 rounded border px-2.5 py-1 text-[12.5px] transition-colors ${
                       cur === value ? "border-primary bg-primary-soft text-primary font-medium" : "border-line text-muted hover:border-ink hover:text-ink"

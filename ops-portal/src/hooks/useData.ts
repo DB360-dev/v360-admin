@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { describeError, describeFunctionError } from "@/lib/errors";
 import type {
-  BrandMoneySettings, BrandPayable, BrandRow, FxRate, InboundBatchAdmin, InvoicePaymentStatus, InvoiceRecord, InvoiceType, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
+  BrandMoneySettings, BrandPayable, BrandRow, BrandShippingInvoice, BrandShippingInvoiceLine, FxRate, InboundBatchAdmin, InvoicePaymentStatus, InvoiceRecord, InvoiceType, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
   OrderEvent, OrderInternalNote, OrderItem, OrderMessage, OrderNoteRole, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
   ShipmentEvent, ShipmentOverview, ShipmentStatus, StatusTransition, TeamMember, WebhookEvent,
 } from "@/lib/types";
@@ -64,11 +64,11 @@ export function useOrderItems(orderId: string | null) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("order_items")
-        .select("product_name, sku, quantity")
+        .select("product_name, sku, quantity, inventory_qty, fulfilment_origin")
         .eq("order_id", orderId!)
         .order("product_name");
       if (error) throw error;
-      return (data ?? []) as Pick<OrderItem, "product_name" | "sku" | "quantity">[];
+      return (data ?? []) as Pick<OrderItem, "product_name" | "sku" | "quantity" | "inventory_qty" | "fulfilment_origin">[];
     },
   });
 }
@@ -166,7 +166,9 @@ export function useInboundBatches(status: "open" | "all") {
     queryFn: async () => {
       let q = supabase.from("inbound_batch_overview").select("*");
       if (status === "open") q = q.in("status", ["in_transit", "issue"]);
-      const { data, error } = await q.order("dispatch_date", { ascending: true }).limit(300);
+      // Latest parcels first
+      const { data, error } = await q.order("dispatch_date", { ascending: false })
+        .order("created_at", { ascending: false }).limit(300);
       if (error) throw error;
       return (data ?? []) as InboundBatchAdmin[];
     },
@@ -401,6 +403,56 @@ export function useShipmentBrandWeights(shipmentId: string | null) {
   });
 }
 
+const SHIPPING_INVOICE_SELECT = "*, brand:organizations(name), shipment:shipments(code, shipping_partner, tracking_number, dispatched_at)";
+
+/** Brand shipping-charges invoices — all, or just one shipment's. */
+export function useBrandShippingInvoices(shipmentId?: string | null) {
+  return useQuery({
+    queryKey: k("brand-shipping-invoices", shipmentId ?? "all"),
+    enabled: shipmentId !== null,
+    queryFn: async () => {
+      let q = supabase.from("brand_shipping_invoices").select(SHIPPING_INVOICE_SELECT).order("created_at", { ascending: false });
+      if (shipmentId) q = q.eq("shipment_id", shipmentId);
+      const { data, error } = await q;
+      if (error) throw error;
+      return (data ?? []) as BrandShippingInvoice[];
+    },
+  });
+}
+
+export function useBrandShippingInvoiceLines(invoiceId: string | null) {
+  return useQuery({
+    queryKey: k("brand-shipping-invoice-lines", invoiceId),
+    enabled: !!invoiceId,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("brand_shipping_invoice_lines").select("*").eq("invoice_id", invoiceId!).order("order_number");
+      if (error) throw error;
+      return (data ?? []) as BrandShippingInvoiceLine[];
+    },
+  });
+}
+
+export type ShipmentFreightOrder = Order & {
+  brand: { name: string } | null;
+  order_items: OrderItem[];
+  order_freight_weights: { weight_kg: number } | { weight_kg: number }[] | null;
+};
+
+/** Orders on a shipment with their items and hub-receiving weight, for the per-brand freight panel. */
+export function useShipmentFreightOrders(shipmentId: string | null) {
+  return useQuery({
+    queryKey: k("shipment-freight-orders", shipmentId),
+    enabled: !!shipmentId,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("orders")
+        .select("*, brand:organizations(name), order_items(*), order_freight_weights(weight_kg)")
+        .eq("shipment_id", shipmentId!).order("order_number");
+      if (error) throw error;
+      return (data ?? []) as ShipmentFreightOrder[];
+    },
+  });
+}
+
 export function useShipmentCalculatedWeight(shipmentId: string | null) {
   return useQuery({
     queryKey: k("shipment-calculated-weight", shipmentId),
@@ -531,9 +583,14 @@ export interface BdDiscrepancy {
   shipment_code: string;
   order_number: string;
   order_status: string;
+  brand_id: string;
+  brand_name: string | null;
   product_name: string;
   sku: string | null;
   variant: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  resolved_by_name: string | null;
 }
 
 export function useBdDiscrepancies() {
@@ -541,7 +598,7 @@ export function useBdDiscrepancies() {
     queryKey: k("bd-discrepancies"),
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("bd_discrepancies")
+        .from("bd_discrepancy_items")
         .select("*")
         .order("checked_at", { ascending: false });
       if (error) throw error;
@@ -556,8 +613,9 @@ export function useBdDiscrepancyCount() {
     staleTime: 60_000,
     queryFn: async () => {
       const { count, error } = await supabase
-        .from("bd_discrepancies")
-        .select("*", { count: "exact", head: true });
+        .from("bd_discrepancy_items")
+        .select("*", { count: "exact", head: true })
+        .is("resolved_at", null);
       if (error) throw error;
       return count ?? 0;
     },
@@ -698,12 +756,45 @@ export const useBulkSetShipmentStatus = (o?: ActionOptions) => useOpsAction(
   "Shipments dispatched", o);
 
 export const useSetTracking = (o?: ActionOptions) => useOpsAction(
-  (v: { id: string; courier: string; tracking: string }) => rpc("set_delivery_tracking", { p_order_id: v.id, p_courier: v.courier.trim(), p_tracking_number: v.tracking.trim() }),
+  (v: { id: string; courier: string; tracking: string; url?: string }) => rpc("set_delivery_tracking", {
+    p_order_id: v.id, p_courier: v.courier.trim(), p_tracking_number: v.tracking.trim(), p_tracking_url: trimOrNull(v.url),
+  }),
   "Delivery tracking saved", o);
+
+/** Save tracking and mark out for delivery in one step. */
+export const useMarkOutForDelivery = (o?: ActionOptions) => useOpsAction(
+  (v: { id: string; courier: string; tracking: string; url?: string; note?: string }) => rpc("mark_out_for_delivery", {
+    p_order_id: v.id, p_courier: v.courier.trim(), p_tracking_number: v.tracking.trim(),
+    p_tracking_url: trimOrNull(v.url), p_note: trimOrNull(v.note),
+  }),
+  "Out for delivery", o);
+
+/** Push the order's delivery tracking to Shopify as a fulfillment (create, or update tracking). */
+export const useShopifyFulfill = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (orderId: string) => {
+      const { data, error } = await supabase.functions.invoke("shopify-fulfill", { body: { order_id: orderId } });
+      if (error) throw new Error(await describeFunctionError(error));
+      return data as { fulfilled?: boolean; updated?: boolean; skipped?: boolean; reason?: string };
+    },
+    onSuccess: (r) => {
+      if (r.fulfilled) toast.success("Fulfilled in Shopify with the tracking");
+      else if (r.updated) toast.success("Tracking updated in Shopify");
+    },
+    onError: (e) => toast.error(`Shopify not updated: ${describeError(e)}`),
+    onSettled: () => qc.invalidateQueries({ queryKey: ROOT }),
+  });
+};
 
 export const useMarkDelivered = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; cash: number; note?: string }) => rpc("mark_delivered", { p_order_id: v.id, p_cod_collected: v.cash, p_note: trimOrNull(v.note) }),
   "Marked as delivered", o);
+
+export const useSetDiscrepancyResolved = (o?: ActionOptions) => useOpsAction(
+  (v: { id: string; resolved: boolean; note?: string }) =>
+    rpc("set_discrepancy_resolved", { p_id: v.id, p_resolved: v.resolved, p_note: trimOrNull(v.note) }),
+  "Discrepancy updated", o);
 
 export const useReturnDisposition = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; items: { order_item_id: string; disposition: ReturnDispositionValue }[]; note?: string }) =>
@@ -831,6 +922,24 @@ export const useRecordKbbPayment = (o?: ActionOptions) => useOpsAction(
       p_shipment_id: v.shipmentId ?? null, p_order_id: v.orderId ?? null, p_note: trimOrNull(v.note),
     }),
   "Payment recorded", o);
+
+export const useRegenerateShippingInvoices = (o?: ActionOptions) => useOpsAction(
+  (shipmentId: string) => rpc<number>("regenerate_brand_shipping_invoices", { p_shipment_id: shipmentId }),
+  (n) => (n ? `${n} shipping invoice${n > 1 ? "s" : ""} recalculated` : "No shipping invoices to recalculate"), o);
+
+export const useDeleteShippingInvoice = (o?: ActionOptions) => useOpsAction(
+  (invoiceId: string) => rpc("delete_brand_shipping_invoice", { p_invoice_id: invoiceId }),
+  "Invoice deleted", o);
+
+/** Saved dispatch advance / final settlement invoice, by number. */
+export const useDeleteInvoice = (o?: ActionOptions) => useOpsAction(
+  (invoiceNumber: string) => rpc("delete_invoice", { p_invoice_number: invoiceNumber }),
+  "Invoice deleted", o);
+
+export const useSetShippingInvoicePaymentStatus = (o?: ActionOptions) => useOpsAction(
+  (v: { invoiceId: string; status: InvoicePaymentStatus }) =>
+    rpc("set_brand_shipping_invoice_payment_status", { p_invoice_id: v.invoiceId, p_status: v.status }),
+  "Payment status updated", o);
 
 export const useUpdateInvoicePaymentStatus = (o?: ActionOptions) => useOpsAction(
   (v: { shipmentId: string; status: InvoicePaymentStatus }) =>
@@ -1038,6 +1147,26 @@ export function useSaveInvoice(o?: { onSuccess?: () => void }) {
   });
 }
 
+/** Once an invoice is paid, push its orders' payment status to Shopify
+ *  (advance -> partially paid, settlement -> paid). Never blocks the status change. */
+async function pushInvoicePaymentToShopify(invoiceNumber: string) {
+  const id = toast.loading("Updating payment status in Shopify…");
+  try {
+    const { data, error } = await supabase.functions.invoke("shopify-payment-sync", { body: { invoice_number: invoiceNumber } });
+    if (error) throw new Error(await describeFunctionError(error));
+    const r = data as { target: string; updated: number; already: number; skipped: number; failed: number; errors: { order_number: string; message: string }[] };
+    const what = r.target === "paid" ? "paid" : "partially paid";
+    const parts = [`${r.updated} marked ${what}`, r.already && `${r.already} already were`, r.skipped && `${r.skipped} skipped`].filter(Boolean).join(", ");
+    if (r.failed) {
+      toast.error(`Shopify: ${parts}, ${r.failed} failed (${r.errors.slice(0, 3).map((e) => `${e.order_number}: ${e.message}`).join("; ")})`, { id, duration: 12000 });
+    } else {
+      toast.success(`Shopify: ${parts}`, { id });
+    }
+  } catch (e) {
+    toast.error(`Shopify not updated: ${describeError(e)}`, { id });
+  }
+}
+
 export function useSetInvoicePaymentStatus(o?: { onSuccess?: () => void }) {
   const qc = useQueryClient();
   return useMutation({
@@ -1048,11 +1177,12 @@ export function useSetInvoicePaymentStatus(o?: { onSuccess?: () => void }) {
       });
       if (error) throw error;
     },
-    onSuccess: () => {
+    onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: ["invoices"] });
       qc.invalidateQueries({ queryKey: ["shipments"] });
       qc.invalidateQueries({ queryKey: ["orders"] });
       toast.success("Payment status updated successfully");
+      if (v.status === "paid") void pushInvoicePaymentToShopify(v.invoiceNumber).finally(() => qc.invalidateQueries({ queryKey: ROOT }));
       if (o?.onSuccess) o.onSuccess();
     },
     onError: (err) => {

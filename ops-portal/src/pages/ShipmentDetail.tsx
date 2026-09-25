@@ -6,14 +6,15 @@ import { useOps } from "@/context/OpsContext";
 import { supabase } from "@/lib/supabase";
 import {
   useAddToShipment, useBdConfirmReceiving, useBdReceivedItems, useBdSaveOrderReceiving, useOrderItems, useOrderList,
-  useRemoveFromShipment, useSetShipmentBrandWeight, useShipment, useShipmentBrandWeights, useShipmentCalculatedWeight,
-  useShipmentEvents, useShipmentOrdersWithItems, useShipmentStatus, useUpdateShipment,
+  useBrandShippingInvoices, useFxRates, useMoneySettings, useRegenerateShippingInvoices, useRemoveFromShipment, useShipment,
+  useShipmentCalculatedWeight, useShipmentEvents, useShipmentFreightOrders, useShipmentOrdersWithItems, useShipmentStatus, useUpdateShipment,
 } from "@/hooks/useData";
-import type { BdReceivedItem, OrderWithItemsForBd } from "@/hooks/useData";
+import type { BdReceivedItem, OrderWithItemsForBd, ShipmentFreightOrder } from "@/hooks/useData";
+import { bdQty, hubQty } from "@/lib/items";
 import { SHIPMENT_STATUS, V360_SHIPMENT_FLOW, nextV360ShipmentStatus } from "@/lib/status";
 import { describeError } from "@/lib/errors";
 import { fmtDateTime, fmtMoney, plural } from "@/lib/format";
-import type { OrderOverview, ShipmentOverview, ShipmentStatus } from "@/lib/types";
+import type { BrandShippingInvoice, OrderItem, OrderOverview, ShipmentOverview, ShipmentStatus } from "@/lib/types";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -22,6 +23,7 @@ import { TextArea, TextField } from "@/components/ui/Field";
 import { EmptyState, ErrorState, Spinner } from "@/components/ui/States";
 import { ActionDialog } from "@/components/ActionDialog";
 import { KbbInvoiceDialog } from "@/components/KbbInvoiceDialog";
+import { ShippingInvoiceDialog } from "@/components/ShippingInvoiceDialog";
 import { Facts, Section } from "./OrderDetail";
 
 const KBB_HIDDEN_STEPS = new Set<ShipmentStatus>(["draft", "ready_for_dispatch", "handed_to_carrier"]);
@@ -125,93 +127,98 @@ function DetailsForm({ s, editable }: { s: ShipmentOverview; editable: boolean }
   );
 }
 
-function FreightSection({ shipment, editable }: { shipment: ShipmentOverview; editable: boolean }) {
-  const weights = useShipmentBrandWeights(editable ? shipment.id : null);
-  const orders = useOrderList({ statuses: null, shipmentId: shipment.id, limit: 500 });
-  const save = useSetShipmentBrandWeight({ inlineErrors: true });
+const orderWeight = (o: ShipmentFreightOrder) => {
+  const w = Array.isArray(o.order_freight_weights) ? o.order_freight_weights[0] : o.order_freight_weights;
+  return w ? Number(w.weight_kg) : null;
+};
+
+/** Units of an order that travel in the shipment vs. those taken from the brand's BD stock. */
+const orderUnits = (items: OrderItem[]) => ({
+  pk: items.reduce((n, i) => n + hubQty(i), 0),
+  bd: items.reduce((n, i) => n + bdQty(i), 0),
+});
+
+const PAYMENT_LABEL = { not_paid: "Unpaid", partially_paid: "Partially paid", paid: "Paid" } as const;
+
+function BrandFreightSection({ shipment }: { shipment: ShipmentOverview }) {
+  const { isV360 } = useOps();
+  const orders = useShipmentFreightOrders(shipment.id);
+  const money = useMoneySettings();
+  const fx = useFxRates();
+  const dispatched = !["draft", "ready_for_dispatch"].includes(shipment.status);
+  const invoices = useBrandShippingInvoices(dispatched ? shipment.id : null);
+  const regenerate = useRegenerateShippingInvoices();
+  const [viewing, setViewing] = useState<BrandShippingInvoice | null>(null);
 
   const brands = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const o of orders.data?.rows ?? []) map.set(o.brand_id, o.brand_name);
-    for (const w of weights.data ?? []) if (!map.has(w.brand_id)) map.set(w.brand_id, w.brand_id.slice(0, 8));
-    return [...map.entries()].map(([id, name]) => ({ id, name }));
-  }, [orders.data, weights.data]);
-
-  const [edits, setEdits] = useState<Record<string, string>>({});
-  const [saveErr, setSaveErr] = useState<string | null>(null);
-  const [savingId, setSavingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const next: Record<string, string> = {};
-    for (const w of weights.data ?? []) next[w.brand_id] = String(w.weight_kg);
-    setEdits(next);
-  }, [weights.data]);
-
-  if (weights.isLoading || orders.isLoading) return <Spinner />;
-  if (weights.isError) return <ErrorState error={weights.error} onRetry={() => weights.refetch()} />;
-
-  if (!editable) {
-    const rows = (weights.data ?? []).map((w) => {
-      const name = brands.find((b) => b.id === w.brand_id)?.name ?? w.brand_id.slice(0, 8);
-      return [name, `${w.weight_kg} kg · ${fmtMoney(w.weight_kg * w.freight_bdt_per_kg * w.fx_rate, "PKR")} (rate ${w.freight_bdt_per_kg} BDT/kg, FX ${w.fx_rate})`] as [string, React.ReactNode];
-    });
-    if (!rows.length) return <p className="text-[13.5px] text-muted">No freight weights entered yet.</p>;
-    return <Facts rows={rows} />;
-  }
-
-  const saveBrand = (brandId: string) => {
-    const raw = (edits[brandId] ?? "").trim();
-    const existing = weights.data?.find((w) => w.brand_id === brandId);
-    const next = raw === "" ? null : Number(raw);
-    if (next !== null && (Number.isNaN(next) || next < 0)) {
-      setSaveErr("Enter a weight of 0 kg or more");
-      return;
+    const m = new Map<string, { id: string; name: string; orders: number; pk: number; bd: number; kg: number; missing: number }>();
+    for (const o of orders.data ?? []) {
+      if (o.status === "cancelled") continue;
+      const b = m.get(o.brand_id) ?? { id: o.brand_id, name: o.brand?.name ?? "Unknown brand", orders: 0, pk: 0, bd: 0, kg: 0, missing: 0 };
+      const u = orderUnits(o.order_items);
+      const w = orderWeight(o);
+      b.orders += 1; b.pk += u.pk; b.bd += u.bd; b.kg += w ?? 0;
+      if (w === null && u.pk > 0) b.missing += 1;
+      m.set(o.brand_id, b);
     }
-    if (next !== null && existing && next === Number(existing.weight_kg)) return;
-    setSaveErr(null);
-    setSavingId(brandId);
-    save.mutate({ shipmentId: shipment.id, brandId, weightKg: next }, {
-      onSuccess: () => setSavingId(null),
-      onError: (e) => { setSaveErr(describeError(e)); setSavingId(null); },
-    });
-  };
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [orders.data]);
+
+  if (orders.isLoading) return <Spinner />;
+  if (orders.isError) return <ErrorState error={orders.error} onRetry={() => orders.refetch()} />;
+  if (!brands.length) return <p className="text-[13.5px] text-muted">Add orders to see each brand's weight.</p>;
+
+  const rate = money.data?.freight_bdt_per_kg ?? null;
+  const bdtPkr = fx.data?.find((r) => r.base === "BDT" && r.quote === "PKR")?.rate ?? null;
+  const estimate = (kg: number) => (rate !== null && bdtPkr !== null ? kg * rate * bdtPkr : null);
+  const invoiceFor = (brandId: string) => invoices.data?.find((i) => i.brand_id === brandId);
+  const missingInvoices = dispatched && !invoices.isLoading && brands.some((b) => !invoiceFor(b.id));
 
   return (
     <div>
       <p className="mb-3 text-[13px] text-muted">
-        Enter each brand's total weight for this shipment. Freight is weight × BDT rate × FX, split across that brand's orders.
+        Each brand's weight is the sum of its orders' weights from hub receiving: only units shipped from Pakistan.
+        {dispatched ? " A shipping-charges invoice was created for each brand when the shipment was handed to the carrier."
+          : " A shipping-charges invoice is created for each brand when the shipment is handed to the carrier."}
       </p>
-      <ul className="space-y-2">
+      <ul className="-mx-4 divide-y divide-line border-y border-line">
         {brands.map((b) => {
-          const raw = edits[b.id] ?? "";
-          const invalid = raw.trim() !== "" && (Number.isNaN(Number(raw)) || Number(raw) < 0);
+          const inv = invoiceFor(b.id);
+          const est = estimate(b.kg);
           return (
-            <li key={b.id} className="flex flex-wrap items-end gap-2">
-              <div className="min-w-0 flex-1">
-                <TextField
-                  label={brands.length > 6 ? b.name : ""}
-                  value={raw}
-                  inputMode="decimal"
-                  placeholder={brands.length > 6 ? undefined : b.name}
-                  optional
-                  error={invalid ? "Enter kg (0 or more)" : null}
-                  onChange={(e) => setEdits((s) => ({ ...s, [b.id]: e.target.value }))}
-                />
-                {brands.length <= 6 && <p className="field-label mt-1">{b.name}</p>}
+            <li key={b.id} className="px-4 py-3 text-[13px]">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-semibold">{b.name}</span>
+                <span className="font-semibold">{Number(b.kg.toFixed(2))} kg</span>
               </div>
-              <Button
-                size="sm"
-                disabled={savingId === b.id || invalid}
-                loading={savingId === b.id}
-                onClick={() => saveBrand(b.id)}
-              >
-                Save
-              </Button>
+              <div className="mt-0.5 flex items-baseline justify-between gap-2 text-[12.5px] text-muted">
+                <span>{plural(b.orders, "order")} · {b.pk} unit{b.pk !== 1 ? "s" : ""} from PK{b.bd > 0 ? ` · ${b.bd} from BD stock (not charged)` : ""}</span>
+                <span>{inv ? fmtMoney(inv.amount_pkr, "PKR") : est !== null ? `≈ ${fmtMoney(est, "PKR")}` : ""}</span>
+              </div>
+              {b.missing > 0 && <p className="mt-1 text-[12px] text-g-problem">{plural(b.missing, "order")} without a hub weight, counted as 0 kg</p>}
+              {inv && (
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <button type="button" className="link text-[12.5px]" onClick={() => setViewing(inv)}>{inv.invoice_number}</button>
+                  <span className="text-[12px] text-muted">{PAYMENT_LABEL[inv.payment_status]}</span>
+                </div>
+              )}
             </li>
           );
         })}
       </ul>
-      {saveErr && <p role="alert" className="mt-2 text-[13px] text-danger">{saveErr}</p>}
+      {!dispatched && rate !== null && bdtPkr !== null && (
+        <p className="mt-3 text-[12px] text-faint">Estimate at {rate} BDT/kg × FX {bdtPkr}. The final rate is fixed on dispatch.</p>
+      )}
+      {!dispatched && rate === null && <p className="mt-3 text-[12px] text-g-problem">Set the BDT freight rate in Money settings before dispatch.</p>}
+      {isV360 && dispatched && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button size="sm" loading={regenerate.isPending} onClick={() => regenerate.mutate(shipment.id)}>
+            {missingInvoices ? "Create missing invoices" : "Recalculate invoices"}
+          </Button>
+          <span className="text-[12px] text-faint">Uses the current hub weights, freight rate and FX. Invoice numbers and payment status are kept.</span>
+        </div>
+      )}
+      <ShippingInvoiceDialog invoice={viewing} onClose={() => setViewing(null)} />
     </div>
   );
 }
@@ -323,6 +330,16 @@ function AddOrdersDialog({ shipment, open, onClose }: { shipment: ShipmentOvervi
   );
 }
 
+function ItemsCell({ units, fallback }: { units?: { pk: number; bd: number }; fallback: number }) {
+  if (!units || units.bd === 0) return <>{units ? units.pk : fallback}</>;
+  return (
+    <div className="whitespace-nowrap">
+      <div>{units.pk} from PK</div>
+      <div className="text-[12px] text-muted">+ {units.bd} from BD stock</div>
+    </div>
+  );
+}
+
 function OrderNumberCell({ order }: { order: OrderOverview }) {
   const [active, setActive] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -355,6 +372,7 @@ function OrderNumberCell({ order }: { order: OrderOverview }) {
                 <li key={i} className="flex gap-2">
                   <span className="w-5 shrink-0 text-right font-medium">{item.quantity}×</span>
                   <span className="text-ink">{item.sku ?? item.product_name}</span>
+                  {bdQty(item) > 0 && <span className="text-faint">({hubQty(item)} PK, {bdQty(item)} BD stock)</span>}
                 </li>
               ))}
             </ul>
@@ -385,10 +403,10 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
     const next: Record<string, Record<string, ItemEdit>> = {};
     for (const o of orders.data) {
       next[o.id] = {};
-      for (const item of o.order_items) {
+      for (const item of o.order_items.filter((i) => hubQty(i) > 0)) {
         const saved = received.data.find((r: BdReceivedItem) => r.order_item_id === item.id);
         next[o.id][item.id] = {
-          qty: String(saved ? saved.received_qty : item.quantity),
+          qty: String(saved ? saved.received_qty : hubQty(item)),
           note: saved?.note ?? "",
         };
       }
@@ -398,7 +416,7 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
 
   const isOrderChecked = (orderId: string) => {
     const o = orders.data?.find((x) => x.id === orderId);
-    return !!o && o.order_items.every((item) => received.data?.some((r: BdReceivedItem) => r.order_item_id === item.id));
+    return !!o && o.order_items.filter((i) => hubQty(i) > 0).every((item) => received.data?.some((r: BdReceivedItem) => r.order_item_id === item.id));
   };
 
   const checkedCount = orders.data?.filter((o) => isOrderChecked(o.id)).length ?? 0;
@@ -415,9 +433,9 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
 
   const handleSaveOrder = (o: OrderWithItemsForBd) => {
     const orderEdits = edits[o.id] ?? {};
-    const items = o.order_items.map((item) => ({
+    const items = o.order_items.filter((i) => hubQty(i) > 0).map((item) => ({
       order_item_id: item.id,
-      received_qty: Math.max(0, Number(orderEdits[item.id]?.qty ?? item.quantity) || 0),
+      received_qty: Math.max(0, Number(orderEdits[item.id]?.qty ?? hubQty(item)) || 0),
       note: orderEdits[item.id]?.note ?? "",
     }));
     setSaveErr(null);
@@ -446,6 +464,8 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
             const checked = isOrderChecked(o.id);
             const isExpanded = expanded === o.id;
             const orderEdits = edits[o.id] ?? {};
+            const shippedItems = o.order_items.filter((i) => hubQty(i) > 0);
+            const bdStockItems = o.order_items.filter((i) => bdQty(i) > 0);
             const orderDiscrepancies = o.order_items.filter((item) => {
               const saved = received.data?.find((r: BdReceivedItem) => r.order_item_id === item.id);
               return saved && saved.received_qty !== saved.expected_qty;
@@ -464,7 +484,7 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
                   <span className="w-28 shrink-0 font-semibold">{o.order_number}</span>
                   <span className="min-w-0 flex-1 truncate text-muted">{o.customer_name ?? "—"}</span>
                   <span className="flex items-center gap-2 text-[12.5px]">
-                    <span className="text-faint">{o.order_items.length} item{o.order_items.length !== 1 ? "s" : ""}</span>
+                    <span className="text-faint">{shippedItems.length} item{shippedItems.length !== 1 ? "s" : ""}</span>
                     {orderDiscrepancies.length > 0 && (
                       <span className="font-medium text-g-problem">{orderDiscrepancies.length} short</span>
                     )}
@@ -487,10 +507,11 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-line">
-                          {o.order_items.map((item) => {
-                            const edit = orderEdits[item.id] ?? { qty: String(item.quantity), note: "" };
+                          {shippedItems.map((item) => {
+                            const expected = hubQty(item);
+                            const edit = orderEdits[item.id] ?? { qty: String(expected), note: "" };
                             const parsed = parseInt(edit.qty, 10);
-                            const mismatch = !Number.isNaN(parsed) && parsed !== item.quantity;
+                            const mismatch = !Number.isNaN(parsed) && parsed !== expected;
                             const needsNote = mismatch && !edit.note.trim();
                             return (
                               <tr key={item.id}>
@@ -498,7 +519,7 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
                                   <span>{item.product_name}</span>
                                   {item.sku && <span className="ml-1 text-faint">· {item.sku}</span>}
                                 </td>
-                                <td className="py-2 text-center font-medium">{item.quantity}</td>
+                                <td className="py-2 text-center font-medium">{expected}</td>
                                 <td className="py-2 text-center">
                                   <input
                                     type="number"
@@ -523,6 +544,12 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
                         </tbody>
                       </table>
                     </div>
+                    {bdStockItems.length > 0 && (
+                      <p className="mt-2 text-[12.5px] text-muted">
+                        Not in this shipment, fulfilled from the brand's Bangladesh stock:{" "}
+                        {bdStockItems.map((i) => `${bdQty(i)}× ${i.product_name}`).join(", ")}
+                      </p>
+                    )}
                     {saveErr && savingId === o.id && (
                       <p role="alert" className="mt-2 text-[13px] text-danger">{saveErr}</p>
                     )}
@@ -601,10 +628,14 @@ export function ShipmentDetail() {
   const [removing, setRemoving] = useState<OrderOverview | null>(null);
   const [showKbbInvoice, setShowKbbInvoice] = useState(false);
 
+  const freightOrders = useShipmentFreightOrders(id);
+  const unitsByOrder = useMemo(
+    () => new Map((freightOrders.data ?? []).map((o) => [o.id, orderUnits(o.order_items)])), [freightOrders.data]);
+
   const s = q.data;
   const next = s ? nextV360ShipmentStatus(s.status) : null;
   const packing = !!s && (s.status === "draft" || s.status === "ready_for_dispatch");
-  const kbbCanReceive = !!s && isKbb && ["handed_to_carrier", "in_transit", "customs"].includes(s.status);
+  const kbbCanReceive = !!s && isKbb && s.status === "arrived_bd";
   const target = isKbb ? "received_by_partner" : next;
   const blocker = useMemo(() => {
     if (!s || !target) return null;
@@ -657,9 +688,9 @@ export function ShipmentDetail() {
                         <td><OrderNumberCell order={o} /></td>
                         <td>{o.brand_name}</td>
                         <td><div className="max-w-[180px] truncate">{o.customer_name}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>
-                        <td className="text-right">{o.item_count}</td>
+                        <td className="text-right"><ItemsCell units={unitsByOrder.get(o.id)} fallback={o.item_count} /></td>
                         <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>
-                        <td><StatusBadge status={o.status} /></td>
+                        <td><StatusBadge status={o.status} discrepancy={o.returned_due_to_discrepancy} /></td>
                         {isV360 && packing && <td className="text-right"><Button size="sm" variant="ghost" onClick={() => { remove.reset(); setRemoving(o); }}>Remove</Button></td>}
                       </tr>
                     ))}
@@ -673,8 +704,8 @@ export function ShipmentDetail() {
         <aside className="space-y-6">
           <Section title="Details"><DetailsForm s={s} editable={isV360 && s.status !== "received_by_partner"} /></Section>
           {isV360 && (
-            <Section title="Freight weight">
-              <FreightSection shipment={s} editable={isV360 && s.status !== "received_by_partner"} />
+            <Section title="Brand weights & shipping charges">
+              <BrandFreightSection shipment={s} />
             </Section>
           )}
           <Section title="History">
@@ -698,7 +729,7 @@ export function ShipmentDetail() {
         <ActionDialog open={moving} onClose={() => setMoving(false)} busy={move.isPending} error={move.error ? describeError(move.error) : null}
           title={isKbb ? `Confirm KBB received ${s.code}` : `${s.code}: ${SHIPMENT_STATUS[target].label}`}
           description={isKbb ? `All ${plural(s.order_count, "order")} inside become "Received by KBB" and move to Deliveries.`
-            : target === "handed_to_carrier" ? "The shipment leaves the hub. Its orders can no longer be changed." : "Every order in the shipment updates with it."}
+            : target === "handed_to_carrier" ? "The shipment leaves the hub. Its orders can no longer be changed, and a shipping-charges invoice is created for each brand." : "Every order in the shipment updates with it."}
           confirmLabel={isKbb ? "Confirm receipt" : "Update shipment"} noteLabel="Note"
           validate={() => blocker} onConfirm={(n) => move.mutate({ id: s.id, to: target, note: n }, { onSuccess: () => setMoving(false) })} />
       )}

@@ -23,7 +23,7 @@ export function Deliveries() {
   const list = useMemo(() => (q.data ?? []).filter((o) =>
     (tab === "all" || o.status === tab) &&
     (!search.trim() || `${o.order_number} ${o.customer_name} ${o.customer_phone} ${o.city} ${o.delivery_tracking_number}`.toLowerCase().includes(search.trim().toLowerCase()))
-  ), [q.data, tab, search]);
+  ).sort((a, b) => new Date(b.order_date).getTime() - new Date(a.order_date).getTime()), [q.data, tab, search]);
 
   return (
     <>
@@ -44,7 +44,7 @@ export function Deliveries() {
       {q.isLoading ? <Spinner /> : q.isError ? <div className="panel"><ErrorState error={q.error} onRetry={() => q.refetch()} /></div> : list.length === 0 ? (
         <div className="panel"><EmptyState icon={<Truck className="h-6 w-6" />} title="Nothing to deliver here">Orders appear once KBB confirms receipt of a shipment.</EmptyState></div>
       ) : (
-        <ul className="space-y-3">{list.map((o) => <QueueCard key={o.id} o={o} showItems={false} />)}</ul>
+        <ul className="space-y-3">{list.map((o) => <QueueCard key={o.id} o={o} showItems={false} showDateAndMaster />)}</ul>
       )}
     </>
   );

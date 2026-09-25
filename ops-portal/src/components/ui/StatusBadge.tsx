@@ -1,9 +1,10 @@
-import { GROUP_CLASSES, STATUS, type StatusGroup } from "@/lib/status";
+import { GROUP_CLASSES, RETURNED_DISCREPANCY_LABEL, STATUS, type StatusGroup } from "@/lib/status";
 import type { OrderStatus } from "@/lib/types";
 
-export function StatusBadge({ status }: { status: OrderStatus }) {
+export function StatusBadge({ status, discrepancy }: { status: OrderStatus; discrepancy?: boolean }) {
   const s = STATUS[status];
-  return <Pill group={s?.group ?? "closed"} label={s?.label ?? status} />;
+  const label = status === "returned" && discrepancy ? RETURNED_DISCREPANCY_LABEL : s?.label ?? status;
+  return <Pill group={s?.group ?? "closed"} label={label} />;
 }
 
 export function Pill({ group, label }: { group: StatusGroup; label: string }) {

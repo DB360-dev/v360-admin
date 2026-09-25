@@ -3,8 +3,9 @@ import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, Inbox } from "lucide-react";
 import { useBatchOrders, useInboundBatches, type OrderWithItems } from "@/hooks/useData";
 import { INBOUND_STATUS } from "@/lib/status";
-import { fmtDate, since } from "@/lib/format";
+import { fmtDate, fmtShort, since } from "@/lib/format";
 import type { InboundBatchAdmin } from "@/lib/types";
+import { bdQty, hubQty } from "@/lib/items";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
@@ -20,27 +21,31 @@ function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
     <>
       <ul className="divide-y divide-line">
         {q.data!
-          .map((o) => {
-            const pkItems = o.order_items.filter((i) => (i.fulfilment_origin ?? "pakistan") !== "bangladesh");
-            const bdCount = o.order_items.length - pkItems.length;
-            return { o, pkItems, bdCount };
-          })
-          .filter(({ pkItems }) => pkItems.length > 0)
-          .map(({ o, pkItems, bdCount }) => {
+          .map((o) => ({ o, hasHubItems: o.order_items.some((i) => hubQty(i) > 0) }))
+          .filter(({ hasHubItems }) => hasHubItems)
+          .sort((a, b) => new Date(b.o.order_date).getTime() - new Date(a.o.order_date).getTime())
+          .map(({ o }) => {
             const canReceive = o.status === "dispatched_to_hub" || o.status === "hub_issue";
             return (
               <li key={o.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
-                <div className="w-24"><Link to={`/orders/${o.id}`} className="font-semibold hover:underline">{o.order_number}</Link></div>
+                <div className="w-24">
+                  <Link to={`/orders/${o.id}`} className="font-semibold hover:underline">{o.order_number}</Link>
+                  <div className="text-[12px] text-faint" title="Order date">{fmtShort(o.order_date)}</div>
+                </div>
                 <ul className="min-w-[220px] flex-1 space-y-0.5 text-[13px]">
-                  {pkItems.map((i) => (
-                    <li key={i.id}>
-                      <span className="font-semibold">{i.quantity}×</span> {i.product_name}{i.variant ? `, ${i.variant}` : ""}
-                      {i.sku && <span className="text-faint"> · {i.sku}</span>}
-                      {o.status === "hub_issue" && i.received_quantity < i.quantity && <span className="ml-2 font-medium text-g-problem">{i.received_quantity} received</span>}
-                    </li>
-                  ))}
+                  {o.order_items.map((i) => {
+                    const pk = hubQty(i), bd = bdQty(i);
+                    const pkReceived = Math.max(0, i.received_quantity - bd);
+                    return (
+                      <li key={i.id}>
+                        <span className={pk > 0 ? "font-semibold" : "text-faint"}>{pk > 0 ? pk : bd}×</span> {i.product_name}{i.variant ? `, ${i.variant}` : ""}
+                        {i.sku && <span className="text-faint"> · {i.sku}</span>}
+                        {bd > 0 && <span className="ml-2 text-[12px] text-muted">{pk > 0 ? `+ ${bd} already` : "already"} in BD stock — not counted</span>}
+                        {o.status === "hub_issue" && pk > 0 && pkReceived < pk && <span className="ml-2 font-medium text-g-problem">{pkReceived} of {pk} received</span>}
+                      </li>
+                    );
+                  })}
                 </ul>
-                {bdCount > 0 && <span className="text-[12px] text-faint">{bdCount} SKU{bdCount > 1 ? "s" : ""} local BD — not counted</span>}
                 <StatusBadge status={o.status} />
                 {canReceive && <Button size="sm" variant="primary" onClick={() => setReceiving(o)}>{o.status === "hub_issue" ? "Recount" : "Receive"}</Button>}
               </li>

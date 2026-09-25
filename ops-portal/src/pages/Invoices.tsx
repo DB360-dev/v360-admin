@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
-import { Eye, Filter, Pencil, Plus, Printer, RefreshCw, Search, Truck } from "lucide-react";
+import { Eye, Filter, Pencil, Plus, Printer, RefreshCw, Search, Trash2, Truck } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
-import { useInvoicesList, useShipments } from "@/hooks/useData";
+import { useDeleteInvoice, useInvoicesList, useShipments } from "@/hooks/useData";
+import { describeError } from "@/lib/errors";
+import { ActionDialog } from "@/components/ActionDialog";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import type { InvoicePaymentStatus, ShipmentOverview } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -10,6 +12,10 @@ import { Spinner } from "@/components/ui/States";
 import { KbbInvoiceDialog, type InvoiceType } from "@/components/KbbInvoiceDialog";
 import { GenerateInvoiceModal } from "@/components/GenerateInvoiceModal";
 import { EditPaymentStatusModal } from "@/components/EditPaymentStatusModal";
+import { BrandShippingInvoicesPanel } from "@/components/BrandShippingInvoicesPanel";
+
+const byNewest = (a: { created_at: string }, b: { created_at: string }) =>
+  new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 
 export function Invoices() {
   const { isV360 } = useOps();
@@ -33,6 +39,11 @@ export function Invoices() {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editInvoiceNum, setEditInvoiceNum] = useState("");
   const [editInvoiceStatus, setEditInvoiceStatus] = useState<InvoicePaymentStatus>("not_paid");
+
+  // Delete saved invoice (V360)
+  const deleteInvoice = useDeleteInvoice({ inlineErrors: true });
+  const [deletingInvoice, setDeletingInvoice] = useState<{ number: string; type: InvoiceType } | null>(null);
+  const openDelete = (number: string, type: InvoiceType) => { deleteInvoice.reset(); setDeletingInvoice({ number, type }); };
 
   const shipments = shipmentsQuery.data ?? [];
   const savedInvoices = invoicesQuery.data ?? [];
@@ -66,6 +77,7 @@ export function Invoices() {
         updated_at: s.created_at,
         shipmentRef: s.code,
         shipmentObj: s,
+        saved: false,
       }));
 
     const allDispatch = [
@@ -73,6 +85,7 @@ export function Invoices() {
         ...inv,
         shipmentRef: inv.invoice_number.replace("INV-DISP-", ""),
         shipmentObj: shipments.find((s) => inv.shipment_ids?.includes(s.id)),
+        saved: true,
       })),
       ...fallbackList,
     ];
@@ -84,7 +97,7 @@ export function Invoices() {
         inv.shipmentRef.toLowerCase().includes(q);
       const matchPayment = paymentFilter === "all" || inv.payment_status === paymentFilter;
       return matchSearch && matchPayment;
-    });
+    }).sort(byNewest);
   }, [savedInvoices, shipments, search, paymentFilter]);
 
   // Filtered Final Settlement Invoices
@@ -96,7 +109,7 @@ export function Invoices() {
       const matchSearch = !q || inv.invoice_number.toLowerCase().includes(q);
       const matchPayment = paymentFilter === "all" || inv.payment_status === paymentFilter;
       return matchSearch && matchPayment;
-    });
+    }).sort(byNewest);
   }, [savedInvoices, search, paymentFilter]);
 
   const openSingleInvoiceModal = (
@@ -141,7 +154,7 @@ export function Invoices() {
     <>
       <PageHeader
         title="Invoices & Payments"
-        description="50% Dispatch Advance Invoices & Final Settlement Invoices"
+        description="KBB dispatch advance & final settlement invoices, and brand shipping charges"
         actions={
           isV360 ? (
             <Button variant="primary" onClick={() => setGeneratorModalOpen(true)}>
@@ -211,6 +224,7 @@ export function Invoices() {
                     <tr>
                       <th>Invoice #</th>
                       <th>Ref</th>
+                      <th>Date</th>
                       <th>Orders</th>
                       <th className="text-right">50% Advance (PKR)</th>
                       <th>Status</th>
@@ -222,6 +236,7 @@ export function Invoices() {
                       <tr key={inv.id || inv.invoice_number} className="hover:bg-surface-hover/50">
                         <td className="font-semibold text-primary">{inv.invoice_number}</td>
                         <td className="text-ink font-medium">{inv.shipmentRef || "Custom"}</td>
+                        <td className="text-muted whitespace-nowrap">{fmtDate(inv.created_at)}</td>
                         <td className="text-muted">{inv.order_count}</td>
                         <td className="text-right font-bold text-ink">
                           {fmtMoney(inv.advance_amount || 0.5 * inv.total_value, "PKR")}
@@ -288,6 +303,12 @@ export function Invoices() {
                                 title="Edit Payment Status"
                               >
                                 <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
+                              </Button>
+                            )}
+                            {isV360 && inv.saved && (
+                              <Button size="sm" variant="ghost" onClick={() => openDelete(inv.invoice_number, "dispatch_advance")}
+                                title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}>
+                                <Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" />
                               </Button>
                             )}
                           </div>
@@ -405,6 +426,12 @@ export function Invoices() {
                                 <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
                               </Button>
                             )}
+                            {isV360 && (
+                              <Button size="sm" variant="ghost" onClick={() => openDelete(inv.invoice_number, "final_settlement")}
+                                title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}>
+                                <Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" />
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -416,6 +443,8 @@ export function Invoices() {
           </div>
         </div>
       )}
+
+      <BrandShippingInvoicesPanel search={search} paymentFilter={paymentFilter} canEdit={isV360} />
 
       {/* Invoice Generator Selection Modal (V360 Only) */}
       {isV360 && (
@@ -447,6 +476,15 @@ export function Invoices() {
           currentStatus={editInvoiceStatus}
         />
       )}
+
+      <ActionDialog open={!!deletingInvoice} onClose={() => setDeletingInvoice(null)} danger busy={deleteInvoice.isPending}
+        error={deleteInvoice.error ? describeError(deleteInvoice.error) : null}
+        title={`Delete ${deletingInvoice?.number ?? ""}?`}
+        description={deletingInvoice?.type === "final_settlement"
+          ? "Its orders go back to unsettled, so they can be included in a new final settlement invoice. This can't be undone."
+          : "The saved invoice is removed and the shipment's advance payment status goes back to Unpaid. The shipment's 50% advance still shows here, calculated fresh, until a new invoice is saved."}
+        confirmLabel="Delete invoice"
+        onConfirm={() => deletingInvoice && deleteInvoice.mutate(deletingInvoice.number, { onSuccess: () => setDeletingInvoice(null) })} />
     </>
   );
 }

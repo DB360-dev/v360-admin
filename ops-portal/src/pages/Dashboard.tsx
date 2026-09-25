@@ -34,7 +34,7 @@ function Ageing({ statuses, title }: { statuses?: OrderStatus[]; title: string }
               <Link to={`/orders/${o.id}`} className="flex items-center gap-3 px-4 py-2.5 hover:bg-sunken/60">
                 <span className="w-20 font-semibold">{o.order_number}</span>
                 <span className="min-w-0 flex-1 truncate text-[13px] text-muted">{o.brand_name}</span>
-                <StatusBadge status={o.status} />
+                <StatusBadge status={o.status} discrepancy={o.returned_due_to_discrepancy} />
                 <span className="w-10 text-right text-[12.5px] font-semibold text-g-problem">{since(o.status_changed_at)}</span>
               </Link>
             </li>

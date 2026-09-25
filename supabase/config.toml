@@ -13,3 +13,11 @@ verify_jwt = true
 # Called from the Admin panel by a signed-in V360 admin.
 [functions.manage-user]
 verify_jwt = true
+
+# Called from the ops portal (V360 / KBB) to fulfill the Shopify order.
+[functions.shopify-fulfill]
+verify_jwt = true
+
+# Called from the ops portal (V360) when an invoice is marked paid.
+[functions.shopify-payment-sync]
+verify_jwt = true
