@@ -8,6 +8,7 @@ export type ShipmentStatus =
   | "draft" | "ready_for_dispatch" | "handed_to_carrier" | "in_transit" | "customs" | "arrived_bd" | "received_by_partner";
 
 export type InboundStatus = "in_transit" | "received" | "issue";
+export type FulfilmentOrigin = "pakistan" | "bangladesh";
 export type MemberRole = "admin" | "operator" | "partner_agent" | "brand_owner" | "brand_staff";
 export type OrgType = "v360" | "partner" | "brand";
 
@@ -38,6 +39,7 @@ export interface OrderItem {
   id: string; order_id: string; product_name: string; sku: string | null; variant: string | null;
   quantity: number; unit_price: number; discount: number; received_quantity: number;
   return_disposition: ReturnDispositionValue | null;
+  fulfilment_origin: FulfilmentOrigin | null;
 }
 
 export interface InboundBatch {

@@ -592,6 +592,8 @@ export interface RestockedItem {
   sku: string | null;
   variant: string | null;
   quantity: number;
+  dispatched_qty: number;
+  available_qty: number;
   unit_price: number;
   discount: number;
   line_total: number;
@@ -607,6 +609,72 @@ export function useRestockedItems() {
         .order("returned_at", { ascending: false });
       if (error) throw error;
       return (data ?? []) as RestockedItem[];
+    },
+  });
+}
+
+export interface DispatchedItem {
+  order_item_id: string;
+  order_id: string;
+  order_number: string;
+  order_date: string;
+  status: string;
+  dispatched_at: string;
+  brand_id: string;
+  brand_name: string;
+  customer_name: string | null;
+  customer_phone: string | null;
+  city: string | null;
+  province: string | null;
+  order_total: number;
+  currency: string;
+  delivered_at: string | null;
+  delivery_courier: string | null;
+  delivery_tracking_number: string | null;
+  failure_reason: string | null;
+  shipment_id: string | null;
+  shipment_code: string | null;
+  product_name: string;
+  sku: string | null;
+  variant: string | null;
+  quantity: number;
+  unit_price: number;
+  discount: number;
+  line_total: number;
+}
+
+export function useDispatchedItems() {
+  return useQuery({
+    queryKey: k("bd-dispatched-items"),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("bd_dispatched_items")
+        .select("*")
+        .order("dispatched_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as DispatchedItem[];
+    },
+  });
+}
+
+export interface InventoryOrderItem {
+  brand_id: string; brand_name: string;
+  order_id: string; order_number: string; order_date: string;
+  customer_name: string | null; city: string | null; status: string;
+  order_item_id: string; product_name: string; sku: string | null; variant: string | null;
+  inventory_qty: number; quantity: number;
+}
+
+export function useInventoryOrders() {
+  return useQuery({
+    queryKey: k("brand-inventory-usage"),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("brand_inventory_usage")
+        .select("*")
+        .order("order_date", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as InventoryOrderItem[];
     },
   });
 }

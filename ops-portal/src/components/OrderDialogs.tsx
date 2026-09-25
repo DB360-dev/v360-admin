@@ -81,6 +81,8 @@ export function TrackingDialog({ order, open, onClose }: Base & { order: Order }
 // ---------- Hub receiving ------------------------------------------------
 export function ReceiveDialog({ order, items, open, onClose }: Base & { order: Order; items: OrderItem[] }) {
   const m = useReceiveOrder({ inlineErrors: true });
+  const pkItems = items.filter((i) => (i.fulfilment_origin ?? "pakistan") !== "bangladesh");
+  const bdCount = items.length - pkItems.length;
   const [qty, setQty] = useState<Record<string, string>>({});
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
@@ -88,16 +90,16 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
   useEffect(() => {
     if (open) {
       m.reset();
-      setQty(Object.fromEntries(items.map((i) => [i.id, String(i.quantity)])));
-      setWeights(Object.fromEntries(items.map((i) => [i.id, ""])));
+      setQty(Object.fromEntries(pkItems.map((i) => [i.id, String(i.quantity)])));
+      setWeights(Object.fromEntries(pkItems.map((i) => [i.id, ""])));
       setNote("");
       setErr(null);
     }
   }, [open]);
 
-  const parsed = items.map((i) => ({ i, n: Math.max(0, Math.min(i.quantity, Math.floor(Number(qty[i.id] ?? 0) || 0))) }));
+  const parsed = pkItems.map((i) => ({ i, n: Math.max(0, Math.min(i.quantity, Math.floor(Number(qty[i.id] ?? 0) || 0))) }));
   const missing = parsed.filter(({ i, n }) => n < i.quantity);
-  const weightRows = items.map((i) => ({ i, raw: (weights[i.id] ?? "").trim(), w: Number(weights[i.id]) }));
+  const weightRows = pkItems.map((i) => ({ i, raw: (weights[i.id] ?? "").trim(), w: Number(weights[i.id]) }));
   const weightMissing = weightRows.some((r) => r.raw === "" || !Number.isFinite(r.w) || r.w <= 0);
   const orderWeight = weightMissing ? null : weightRows.reduce((s, r) => s + r.w * r.i.quantity, 0);
   const submit = () => {
@@ -109,13 +111,18 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
 
   return (
     <Dialog open={open} onClose={onClose} onSubmit={submit} busy={m.isPending} error={m.error ? describeError(m.error) : null}
-      title={`Receive ${order.order_number}`} description="Count what physically arrived and record the weight of every item. The order only becomes ready for shipment when every item is here."
+      title={`Receive ${order.order_number}`} description="Count what physically arrived and record the weight of every item. The order only becomes ready for shipment when every item sent from Pakistan is here."
       footer={<>
         <Button onClick={onClose} disabled={m.isPending}>Cancel</Button>
         <Button type="submit" variant={missing.length ? "danger" : "primary"} loading={m.isPending}>
           {missing.length ? "Record mismatch" : "All received"}
         </Button>
       </>}>
+      {bdCount > 0 && (
+        <p className="mb-3 rounded border border-line bg-sunken/40 px-3 py-2 text-[12.5px] text-muted">
+          {bdCount} SKU{bdCount > 1 ? "s" : ""} fulfilled locally in Bangladesh {bdCount > 1 ? "are" : "is"} excluded — {bdCount > 1 ? "they never reach" : "it never reaches"} the hub and aren't counted here.
+        </p>
+      )}
       <table className="w-full text-[13.5px]">
         <thead className="table-head"><tr><th>Item</th><th className="text-right">Ordered</th><th className="w-28 text-right">Received</th><th className="w-28 text-right">Weight kg</th></tr></thead>
         <tbody className="table-body">

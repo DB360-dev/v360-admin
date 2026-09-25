@@ -19,25 +19,33 @@ function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
   return (
     <>
       <ul className="divide-y divide-line">
-        {q.data!.map((o) => {
-          const canReceive = o.status === "dispatched_to_hub" || o.status === "hub_issue";
-          return (
-            <li key={o.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
-              <div className="w-24"><Link to={`/orders/${o.id}`} className="font-semibold hover:underline">{o.order_number}</Link></div>
-              <ul className="min-w-[220px] flex-1 space-y-0.5 text-[13px]">
-                {o.order_items.map((i) => (
-                  <li key={i.id}>
-                    <span className="font-semibold">{i.quantity}×</span> {i.product_name}{i.variant ? `, ${i.variant}` : ""}
-                    {i.sku && <span className="text-faint"> · {i.sku}</span>}
-                    {o.status === "hub_issue" && i.received_quantity < i.quantity && <span className="ml-2 font-medium text-g-problem">{i.received_quantity} received</span>}
-                  </li>
-                ))}
-              </ul>
-              <StatusBadge status={o.status} />
-              {canReceive && <Button size="sm" variant="primary" onClick={() => setReceiving(o)}>{o.status === "hub_issue" ? "Recount" : "Receive"}</Button>}
-            </li>
-          );
-        })}
+        {q.data!
+          .map((o) => {
+            const pkItems = o.order_items.filter((i) => (i.fulfilment_origin ?? "pakistan") !== "bangladesh");
+            const bdCount = o.order_items.length - pkItems.length;
+            return { o, pkItems, bdCount };
+          })
+          .filter(({ pkItems }) => pkItems.length > 0)
+          .map(({ o, pkItems, bdCount }) => {
+            const canReceive = o.status === "dispatched_to_hub" || o.status === "hub_issue";
+            return (
+              <li key={o.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
+                <div className="w-24"><Link to={`/orders/${o.id}`} className="font-semibold hover:underline">{o.order_number}</Link></div>
+                <ul className="min-w-[220px] flex-1 space-y-0.5 text-[13px]">
+                  {pkItems.map((i) => (
+                    <li key={i.id}>
+                      <span className="font-semibold">{i.quantity}×</span> {i.product_name}{i.variant ? `, ${i.variant}` : ""}
+                      {i.sku && <span className="text-faint"> · {i.sku}</span>}
+                      {o.status === "hub_issue" && i.received_quantity < i.quantity && <span className="ml-2 font-medium text-g-problem">{i.received_quantity} received</span>}
+                    </li>
+                  ))}
+                </ul>
+                {bdCount > 0 && <span className="text-[12px] text-faint">{bdCount} SKU{bdCount > 1 ? "s" : ""} local BD — not counted</span>}
+                <StatusBadge status={o.status} />
+                {canReceive && <Button size="sm" variant="primary" onClick={() => setReceiving(o)}>{o.status === "hub_issue" ? "Recount" : "Receive"}</Button>}
+              </li>
+            );
+          })}
       </ul>
       {receiving && <ReceiveDialog order={receiving} items={receiving.order_items} open onClose={() => setReceiving(null)} />}
     </>
