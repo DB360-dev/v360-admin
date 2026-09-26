@@ -30,6 +30,8 @@ export function useStatusCounts() {
 export interface OrderQuery {
   statuses: OrderStatus[] | null; brandId?: string; search?: string; from?: string; to?: string;
   page?: number; oldestFirst?: boolean; shipmentId?: string; limit?: number;
+  /** When set, "returned" orders only match if returned_due_to_discrepancy equals this. */
+  returnedDiscrepancy?: boolean;
 }
 const cleanSearch = (s: string) => s.replace(/[,()*%\\:"']/g, " ").trim();
 
@@ -39,7 +41,11 @@ export function useOrderList(f: OrderQuery) {
     placeholderData: keepPreviousData,
     queryFn: async () => {
       let q = supabase.from("order_overview").select("*", { count: "exact" });
-      if (f.statuses) q = q.in("status", f.statuses);
+      if (f.statuses && f.returnedDiscrepancy !== undefined && f.statuses.includes("returned")) {
+        const others = f.statuses.filter((s) => s !== "returned");
+        const returned = `and(status.eq.returned,returned_due_to_discrepancy.is.${f.returnedDiscrepancy})`;
+        q = q.or(others.length ? `status.in.(${others.join(",")}),${returned}` : returned);
+      } else if (f.statuses) q = q.in("status", f.statuses);
       if (f.brandId) q = q.eq("brand_id", f.brandId);
       if (f.shipmentId) q = q.eq("shipment_id", f.shipmentId);
       const s = cleanSearch(f.search ?? "");

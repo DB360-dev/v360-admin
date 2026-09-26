@@ -130,6 +130,30 @@ export function masterStatus(o: Pick<OrderOverview, "status" | "returned_due_to_
   return { label: s?.label ?? o.status, group: s?.group ?? "closed" };
 }
 
+/** Every (status, returned-due-to-discrepancy) combination an order can be in. */
+type OrderState = { status: OrderStatus; discrepancy: boolean };
+const ALL_STATES: OrderState[] = (Object.keys(STATUS) as OrderStatus[]).flatMap((status): OrderState[] =>
+  status === "returned" ? [{ status, discrepancy: false }, { status, discrepancy: true }] : [{ status, discrepancy: false }]);
+const asOrder = (st: OrderState) => ({ status: st.status, returned_due_to_discrepancy: st.discrepancy }) as OrderOverview;
+
+/** The status columns that can be filtered, keyed by URL param. */
+const STATUS_FILTERS = [
+  { param: "fs", label: "Fulfilment status", fn: fulfilmentStatus },
+  { param: "bs", label: "Brand status", fn: brandStatus },
+  { param: "ms", label: "Master status", fn: masterStatus },
+].map((f) => ({ ...f, options: [...new Set(ALL_STATES.map((st) => f.fn(asOrder(st)).label))] }));
+
+/** Turn the tab's statuses plus the picked column labels into an order_overview filter. */
+function statusQuery(base: OrderStatus[] | null, picks: { fn: (o: OrderOverview) => { label: string }; label: string }[]) {
+  if (picks.length === 0) return { statuses: base, returnedDiscrepancy: undefined };
+  const states = ALL_STATES.filter((st) => (!base || base.includes(st.status)) && picks.every((p) => p.fn(asOrder(st)).label === p.label));
+  const returned = states.filter((st) => st.status === "returned");
+  return {
+    statuses: [...new Set(states.map((st) => st.status))],
+    returnedDiscrepancy: returned.length === 1 ? returned[0].discrepancy : undefined,
+  };
+}
+
 export function Orders() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -144,6 +168,7 @@ export function Orders() {
   const to = params.get("to") ?? "";
   const [searchInput, setSearchInput] = useState(params.get("q") ?? "");
   const search = useDebounced(searchInput);
+  const picks = STATUS_FILTERS.filter((f) => params.get(f.param)).map((f) => ({ fn: f.fn, label: params.get(f.param)! }));
 
   const update = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
@@ -155,11 +180,11 @@ export function Orders() {
 
   const counts = useStatusCounts().data;
   const brands = useBrandOptions().data ?? [];
-  const q = useOrderList({ statuses: statusFilter ? [statusFilter] : view!.statuses, brandId: brandId || undefined, search, from, to, page });
+  const q = useOrderList({ ...statusQuery(statusFilter ? [statusFilter] : view!.statuses, picks), brandId: brandId || undefined, search, from, to, page });
   const rows = q.data?.rows ?? [];
   const total = q.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const filters = !!(search || from || to || brandId);
+  const filters = !!(search || from || to || brandId || picks.length);
   const count = (ss: OrderStatus[] | null) => counts ? (ss ?? Object.keys(counts) as (keyof typeof counts)[]).reduce((n, s) => n + (counts[s] ?? 0), 0) : null;
 
   return (
@@ -196,9 +221,17 @@ export function Orders() {
             {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
         </label>
+        {STATUS_FILTERS.map((f) => (
+          <label key={f.param} className="text-[12.5px] text-muted">{f.label}
+            <select className="input mt-1 w-[190px]" value={params.get(f.param) ?? ""} onChange={(e) => update({ [f.param]: e.target.value || null })}>
+              <option value="">All</option>
+              {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </label>
+        ))}
         <label className="text-[12.5px] text-muted">From<input type="date" className="input mt-1 w-[150px]" value={from} onChange={(e) => update({ from: e.target.value || null })} /></label>
         <label className="text-[12.5px] text-muted">To<input type="date" className="input mt-1 w-[150px]" value={to} onChange={(e) => update({ to: e.target.value || null })} /></label>
-        {filters && <Button variant="ghost" size="sm" onClick={() => { setSearchInput(""); update({ q: null, from: null, to: null, brand: null }); }}><X className="h-3.5 w-3.5" /> Clear</Button>}
+        {filters && <Button variant="ghost" size="sm" onClick={() => { setSearchInput(""); update({ q: null, from: null, to: null, brand: null, fs: null, bs: null, ms: null }); }}><X className="h-3.5 w-3.5" /> Clear</Button>}
       </div>
 
       <div className="panel overflow-hidden">

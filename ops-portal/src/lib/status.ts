@@ -59,7 +59,7 @@ export const NOTE_REQUIRED: OrderStatus[] = ["cancelled", "delivery_failed", "ne
 export const ORDER_VIEWS: { key: string; label: string; statuses: OrderStatus[] | null }[] = [
   { key: "all", label: "All", statuses: null },
   { key: "kbb", label: "Confirming", statuses: CONFIRM_QUEUE },
-  { key: "brand", label: "With brand", statuses: ["needs_amendment", "confirmed", "brand_confirmed", "brand_preparing"] },
+  { key: "brand", label: "Brand Confirmed", statuses: ["needs_amendment", "confirmed", "brand_confirmed", "brand_preparing"] },
   { key: "hub", label: "Hub", statuses: ["dispatched_to_hub", "received_at_hub", "hub_issue", "ready_for_shipment", "assigned_to_shipment"] },
   { key: "transit", label: "In transit", statuses: ["shipped", "in_transit", "customs", "arrived_bd"] },
   { key: "lastmile", label: "Last mile", statuses: ["received_by_partner", "preparing_for_delivery", "out_for_delivery"] },
