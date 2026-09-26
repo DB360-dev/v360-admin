@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, Filter, Package, RefreshCw, Search, Ship, Truck, X } from "lucide-react";
+import { ChevronDown, Filter, HandCoins, Package, RefreshCw, Search, Ship, Truck, X } from "lucide-react";
+import { BrandPayoutPicker } from "@/components/BrandPayoutPicker";
 import { useOrderList, useShipments } from "@/hooks/useData";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { SHIPMENT_STATUS, STATUS } from "@/lib/status";
@@ -15,9 +16,11 @@ interface GenerateInvoiceModalProps {
   onClose: () => void;
   onGenerateShipments: (shipments: ShipmentOverview[], invoiceType: InvoiceType) => void;
   onGenerateOrders: (orderIds: string[], invoiceType: InvoiceType) => void;
+  /** A brand payout invoice was created (saved already). */
+  onBrandInvoiceCreated: (invoiceNumber: string) => void;
 }
 
-type Step = "choose" | "by_shipments" | "by_orders";
+type Step = "choose" | "by_shipments" | "by_orders" | "by_brand";
 
 const ALL_STATUS_OPTIONS: { value: OrderStatus; label: string; group: string }[] = [
   { value: "ready_for_shipment", label: "Ready for shipment", group: "V360 Hub" },
@@ -51,6 +54,7 @@ export function GenerateInvoiceModal({
   onClose,
   onGenerateShipments,
   onGenerateOrders,
+  onBrandInvoiceCreated,
 }: GenerateInvoiceModalProps) {
   const [step, setStep] = useState<Step>("choose");
   const [targetInvoiceType, setTargetInvoiceType] = useState<InvoiceType>("dispatch_advance");
@@ -192,6 +196,8 @@ export function GenerateInvoiceModal({
           ? "Generate Invoice"
           : step === "by_shipments"
           ? "Generate Invoice by Shipments"
+          : step === "by_brand"
+          ? "Generate Invoice for Brand"
           : "Generate Invoice by Orders"
       }
       width={step === "choose" ? "md" : "lg"}
@@ -252,8 +258,35 @@ export function GenerateInvoiceModal({
                 Select Orders &rarr;
               </div>
             </button>
+
+            {/* Choice 3: Brand payout */}
+            <button
+              type="button"
+              onClick={() => setStep("by_brand")}
+              className="flex flex-col justify-between rounded-lg border border-line bg-surface p-4 text-left transition-all hover:border-primary hover:bg-primary-soft/40 hover:shadow-xs group sm:col-span-2"
+            >
+              <div>
+                <div className="mb-3 grid h-10 w-10 place-items-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-fg">
+                  <HandCoins className="h-5 w-5" />
+                </div>
+                <h3 className="text-sm font-semibold text-ink group-hover:text-primary">
+                  Generate Invoice for Brand
+                </h3>
+                <p className="mt-1 text-xs text-muted leading-relaxed">
+                  Pay a brand: all delivered and returned parcels at full price, less V360 commission on delivered orders and less the returned orders. Only orders KBB has settled.
+                </p>
+              </div>
+              <div className="mt-4 flex items-center text-xs font-semibold text-primary">
+                Select Brand Orders &rarr;
+              </div>
+            </button>
           </div>
         </div>
+      )}
+
+      {step === "by_brand" && (
+        <BrandPayoutPicker onBack={() => setStep("choose")}
+          onCreated={(n) => { onBrandInvoiceCreated(n); handleClose(); }} />
       )}
 
       {/* STEP 2A: GENERATE BY SHIPMENTS */}

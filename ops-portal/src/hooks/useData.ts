@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { describeError, describeFunctionError } from "@/lib/errors";
 import type {
-  BrandMoneySettings, BrandPayable, BrandRow, BrandShippingInvoice, BrandShippingInvoiceLine, FxRate, InboundBatchAdmin, InvoicePaymentStatus, InvoiceRecord, InvoiceType, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
+  BrandMoneySettings, BrandPayable, BrandPayoutCandidate, BrandRow, BrandShippingInvoice, BrandShippingInvoiceLine, FxRate, InboundBatchAdmin, InvoicePaymentStatus, InvoiceRecord, InvoiceType, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
   OrderEvent, OrderInternalNote, OrderItem, OrderMessage, OrderNoteRole, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
   ShipmentEvent, ShipmentOverview, ShipmentStatus, StatusTransition, TeamMember, WebhookEvent,
 } from "@/lib/types";
@@ -1094,6 +1094,42 @@ export function useMarkMessagesRead(orderId: string) {
   });
 }
 
+export function useBrandPayoutCandidates(enabled = true) {
+  return useQuery({
+    queryKey: k("brand-payout-candidates"),
+    enabled,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("brand_payout_candidates").select("*")
+        .order("brand_name").order("order_date", { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as BrandPayoutCandidate[];
+    },
+  });
+}
+
+/** V360 commission % per brand (brand setting, else the global default). */
+export function useV360CommissionPcts(enabled = true) {
+  return useQuery({
+    queryKey: k("v360-commission-pcts"),
+    enabled,
+    queryFn: async () => {
+      const [{ data: rows, error }, { data: global }] = await Promise.all([
+        supabase.from("brand_money_settings").select("brand_id, v360_commission_pct"),
+        supabase.rpc("my_money_settings"),
+      ]);
+      if (error) throw error;
+      const byBrand: Record<string, number> = {};
+      for (const r of rows ?? []) byBrand[r.brand_id] = Number(r.v360_commission_pct);
+      return { byBrand, fallback: Number((global as { v360_commission_pct?: number } | null)?.v360_commission_pct ?? 15) };
+    },
+  });
+}
+
+export const useCreateBrandPayoutInvoice = (o?: ActionOptions) => useOpsAction(
+  (v: { brandId: string; orderIds: string[] }) =>
+    rpc<string>("create_brand_payout_invoice", { p_brand_id: v.brandId, p_order_ids: v.orderIds }),
+  (n) => `Brand invoice ${n} created`, o);
+
 export function useInvoicesList() {
   return useQuery({
     queryKey: k("invoices"),
@@ -1182,7 +1218,7 @@ export function useSetInvoicePaymentStatus(o?: { onSuccess?: () => void }) {
       qc.invalidateQueries({ queryKey: ["shipments"] });
       qc.invalidateQueries({ queryKey: ["orders"] });
       toast.success("Payment status updated successfully");
-      if (v.status === "paid") void pushInvoicePaymentToShopify(v.invoiceNumber).finally(() => qc.invalidateQueries({ queryKey: ROOT }));
+      if (v.status === "paid" && !v.invoiceNumber.startsWith("INV-BRAND-")) void pushInvoicePaymentToShopify(v.invoiceNumber).finally(() => qc.invalidateQueries({ queryKey: ROOT }));
       if (o?.onSuccess) o.onSuccess();
     },
     onError: (err) => {

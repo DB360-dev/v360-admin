@@ -13,6 +13,7 @@ import { KbbInvoiceDialog, type InvoiceType } from "@/components/KbbInvoiceDialo
 import { GenerateInvoiceModal } from "@/components/GenerateInvoiceModal";
 import { EditPaymentStatusModal } from "@/components/EditPaymentStatusModal";
 import { BrandShippingInvoicesPanel } from "@/components/BrandShippingInvoicesPanel";
+import { BrandPayoutInvoicesPanel } from "@/components/BrandPayoutInvoicesPanel";
 
 const byNewest = (a: { created_at: string }, b: { created_at: string }) =>
   new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
@@ -33,6 +34,8 @@ export function Invoices() {
   const [modalMode, setModalMode] = useState<"summary" | "detail">("summary");
   const [targetInvoiceType, setTargetInvoiceType] = useState<InvoiceType>("dispatch_advance");
   const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
+  const [savedInvoiceNumber, setSavedInvoiceNumber] = useState<string | undefined>(undefined);
+  const [newBrandInvoice, setNewBrandInvoice] = useState<string | null>(null);
   const [generatorModalOpen, setGeneratorModalOpen] = useState(false);
 
   // Edit payment status modal state
@@ -42,8 +45,8 @@ export function Invoices() {
 
   // Delete saved invoice (V360)
   const deleteInvoice = useDeleteInvoice({ inlineErrors: true });
-  const [deletingInvoice, setDeletingInvoice] = useState<{ number: string; type: InvoiceType } | null>(null);
-  const openDelete = (number: string, type: InvoiceType) => { deleteInvoice.reset(); setDeletingInvoice({ number, type }); };
+  const [deletingInvoice, setDeletingInvoice] = useState<{ number: string; type: InvoiceType | "brand_payout" } | null>(null);
+  const openDelete = (number: string, type: InvoiceType | "brand_payout") => { deleteInvoice.reset(); setDeletingInvoice({ number, type }); };
 
   const shipments = shipmentsQuery.data ?? [];
   const savedInvoices = invoicesQuery.data ?? [];
@@ -116,10 +119,17 @@ export function Invoices() {
     shipment: ShipmentOverview | null,
     orderIdsList: string[] | undefined,
     mode: "summary" | "detail",
-    type: InvoiceType
+    type: InvoiceType,
+    savedNumber?: string,
+    shipmentIdsList?: string[] | null,
   ) => {
-    setSelectedSingleShipment(shipment);
-    setSelectedMultiShipments(undefined);
+    // Saved invoices over several shipments: show all of them.
+    const multi = shipmentIdsList && shipmentIdsList.length > 1
+      ? shipments.filter((sh) => shipmentIdsList.includes(sh.id)) : undefined;
+    const single = shipment ?? (shipmentIdsList?.length === 1 ? shipments.find((sh) => sh.id === shipmentIdsList[0]) ?? null : null);
+    setSavedInvoiceNumber(savedNumber);
+    setSelectedSingleShipment(multi ? null : single);
+    setSelectedMultiShipments(multi);
     setSelectedOrderIds(orderIdsList);
     setModalMode(mode);
     setTargetInvoiceType(type);
@@ -133,6 +143,7 @@ export function Invoices() {
   };
 
   const handleGenerateShipments = (shipmentsList: ShipmentOverview[], type: InvoiceType) => {
+    setSavedInvoiceNumber(undefined);
     setSelectedSingleShipment(null);
     setSelectedMultiShipments(shipmentsList);
     setSelectedOrderIds(undefined);
@@ -142,6 +153,7 @@ export function Invoices() {
   };
 
   const handleGenerateOrders = (orderIdsList: string[], type: InvoiceType) => {
+    setSavedInvoiceNumber(undefined);
     setSelectedSingleShipment(null);
     setSelectedMultiShipments(undefined);
     setSelectedOrderIds(orderIdsList);
@@ -268,7 +280,9 @@ export function Invoices() {
                                   inv.shipmentObj || null,
                                   inv.order_ids || undefined,
                                   "summary",
-                                  "dispatch_advance"
+                                  "dispatch_advance",
+                                  inv.saved ? inv.invoice_number : undefined,
+                                  inv.saved ? inv.shipment_ids : undefined,
                                 )
                               }
                               title="Summary View"
@@ -283,7 +297,9 @@ export function Invoices() {
                                   inv.shipmentObj || null,
                                   inv.order_ids || undefined,
                                   "detail",
-                                  "dispatch_advance"
+                                  "dispatch_advance",
+                                  inv.saved ? inv.invoice_number : undefined,
+                                  inv.saved ? inv.shipment_ids : undefined,
                                 )
                               }
                               title="Detailed PDF View"
@@ -389,7 +405,9 @@ export function Invoices() {
                                   null,
                                   inv.order_ids || undefined,
                                   "summary",
-                                  "final_settlement"
+                                  "final_settlement",
+                                  inv.invoice_number,
+                                  inv.shipment_ids,
                                 )
                               }
                               title="Summary View"
@@ -404,7 +422,9 @@ export function Invoices() {
                                   null,
                                   inv.order_ids || undefined,
                                   "detail",
-                                  "final_settlement"
+                                  "final_settlement",
+                                  inv.invoice_number,
+                                  inv.shipment_ids,
                                 )
                               }
                               title="Detailed PDF View"
@@ -444,6 +464,9 @@ export function Invoices() {
         </div>
       )}
 
+      <BrandPayoutInvoicesPanel invoices={savedInvoices} search={search} paymentFilter={paymentFilter} canEdit={isV360}
+        openNumber={newBrandInvoice} onOpened={() => setNewBrandInvoice(null)}
+        onEditPayment={handleOpenEditPayment} onDelete={(n) => openDelete(n, "brand_payout")} />
       <BrandShippingInvoicesPanel search={search} paymentFilter={paymentFilter} canEdit={isV360} />
 
       {/* Invoice Generator Selection Modal (V360 Only) */}
@@ -453,6 +476,7 @@ export function Invoices() {
           onClose={() => setGeneratorModalOpen(false)}
           onGenerateShipments={handleGenerateShipments}
           onGenerateOrders={handleGenerateOrders}
+          onBrandInvoiceCreated={setNewBrandInvoice}
         />
       )}
 
@@ -465,6 +489,7 @@ export function Invoices() {
         orderIds={selectedOrderIds}
         initialMode={modalMode}
         initialInvoiceType={targetInvoiceType}
+        savedInvoiceNumber={savedInvoiceNumber}
       />
 
       {/* Edit Payment Status Modal (V360 Only) */}
@@ -480,7 +505,9 @@ export function Invoices() {
       <ActionDialog open={!!deletingInvoice} onClose={() => setDeletingInvoice(null)} danger busy={deleteInvoice.isPending}
         error={deleteInvoice.error ? describeError(deleteInvoice.error) : null}
         title={`Delete ${deletingInvoice?.number ?? ""}?`}
-        description={deletingInvoice?.type === "final_settlement"
+        description={deletingInvoice?.type === "brand_payout"
+          ? "Its orders become available for a new brand invoice. This can't be undone."
+          : deletingInvoice?.type === "final_settlement"
           ? "Its orders go back to unsettled, so they can be included in a new final settlement invoice. This can't be undone."
           : "The saved invoice is removed and the shipment's advance payment status goes back to Unpaid. The shipment's 50% advance still shows here, calculated fresh, until a new invoice is saved."}
         confirmLabel="Delete invoice"

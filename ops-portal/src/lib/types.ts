@@ -99,7 +99,7 @@ export interface OrderInternalNote {
 
 export type InvoicePaymentStatus = "not_paid" | "partially_paid" | "paid";
 
-export type InvoiceType = "dispatch_advance" | "final_settlement";
+export type InvoiceType = "dispatch_advance" | "final_settlement" | "brand_payout";
 
 export interface InvoiceRecord {
   id: string;
@@ -117,6 +117,27 @@ export interface InvoiceRecord {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  /** Brand payout invoices only. */
+  brand_id?: string | null;
+  lines?: BrandPayoutLines | null;
+}
+
+export interface BrandPayoutLine {
+  order_id: string; order_number: string; status: OrderStatus; returned_due_to_discrepancy: boolean;
+  value: number; commission: number; returned_deduction: number; payable: number;
+  /** Stored from migration 040 on. */
+  order_date?: string; customer_name?: string | null; city?: string | null;
+  items?: { product_name: string; variant: string | null; sku: string | null; quantity: number; unit_price: number; discount: number }[];
+}
+export interface BrandPayoutLines {
+  v360_commission_pct: number; delivered_value: number; returned_value: number; orders: BrandPayoutLine[];
+}
+
+/** An order V360 can pay the brand for (KBB-settled, delivered or returned, not paid out yet). */
+export interface BrandPayoutCandidate {
+  id: string; brand_id: string; brand_name: string; order_number: string; order_date: string; status: OrderStatus;
+  returned_due_to_discrepancy: boolean; customer_name: string | null; city: string | null;
+  order_value: number; delivered_at: string | null; settled_at: string | null;
 }
 
 export interface OrderOverview {

@@ -21,6 +21,18 @@ interface KbbInvoiceDialogProps {
   orderIds?: string[];
   initialMode?: "summary" | "detail";
   initialInvoiceType?: InvoiceType;
+  /** Viewing an already-saved invoice: show it under this number and don't save it again. */
+  savedInvoiceNumber?: string;
+}
+
+/** Short stable id for a set of ids, so every distinct selection gets its own invoice number. */
+function selectionKey(ids: string[]): string {
+  let h = 0x811c9dc5;
+  for (const ch of [...ids].sort().join(",")) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36).toUpperCase().padStart(7, "0");
 }
 
 function fmtNum(val: number): string {
@@ -35,6 +47,7 @@ export function KbbInvoiceDialog({
   orderIds,
   initialMode = "detail",
   initialInvoiceType = "dispatch_advance",
+  savedInvoiceNumber,
 }: KbbInvoiceDialogProps) {
   const printRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<"summary" | "detail">(initialMode);
@@ -281,14 +294,16 @@ export function KbbInvoiceDialog({
     statusLabelText = SHIPMENT_STATUS[s.status]?.label || s.status;
     issueDate = s.dispatched_at ? fmtDate(s.dispatched_at) : fmtDate(s.created_at);
   } else if (targetShipments.length > 1) {
-    invoiceNumber = invoiceType === "dispatch_advance" ? `INV-DISP-MULTI-${targetShipments.length}` : `INV-SETTLE-MULTI-${targetShipments.length}`;
+    const key = selectionKey(targetShipments.map((s) => s.id));
+    invoiceNumber = invoiceType === "dispatch_advance" ? `INV-DISP-MULTI-${key}` : `INV-SETTLE-MULTI-${key}`;
     shipmentRefLabel = targetShipments.map((s) => s.code).join(", ");
     routeLabel = "Multi-Shipment (PK -> BD)";
     carrierLabel = "Consolidated Shipments";
     trackingLabel = `${targetShipments.length} Shipments`;
     statusLabelText = "Consolidated Invoice";
   } else if (orderIds && orderIds.length > 0) {
-    invoiceNumber = invoiceType === "dispatch_advance" ? `INV-DISP-ORD-${orderIds.length}` : `INV-SETTLE-ORD-${orderIds.length}`;
+    const key = selectionKey(orderIds);
+    invoiceNumber = invoiceType === "dispatch_advance" ? `INV-DISP-ORD-${key}` : `INV-SETTLE-ORD-${key}`;
     shipmentRefLabel = `${orderIds.length} Custom Orders`;
     routeLabel = "Direct Order Selection";
     carrierLabel = "Order Invoice";
@@ -296,11 +311,15 @@ export function KbbInvoiceDialog({
     statusLabelText = "Order-based Invoice";
   }
 
+  // An existing invoice keeps its own number (as long as it's the type being shown).
+  const viewingSaved = !!savedInvoiceNumber && invoiceType === initialInvoiceType;
+  if (viewingSaved) invoiceNumber = savedInvoiceNumber!;
+
   const saveInvoice = useSaveInvoice();
   const isLoading = moneySettings.isLoading || brandSettingsQuery.isLoading || shipmentFullOrdersQuery.isLoading;
 
   useEffect(() => {
-    if (open && !isLoading && displayOrderCount > 0) {
+    if (open && !isLoading && displayOrderCount > 0 && !viewingSaved) {
       const isAdv = invoiceType === "dispatch_advance";
       const totalVal = isAdv ? totalDispatchValue : (totalSettlementDeliveredValue + totalSettlementReturnedValue);
       const advAmt = isAdv ? totalDispatchAdvance50 : 0;
@@ -321,7 +340,7 @@ export function KbbInvoiceDialog({
         payableAmount: payable,
       });
     }
-  }, [open, isLoading, invoiceNumber, invoiceType]);
+  }, [open, isLoading, invoiceNumber, invoiceType, viewingSaved]);
 
   const handlePrint = () => {
     window.print();

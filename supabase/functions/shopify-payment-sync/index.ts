@@ -67,6 +67,9 @@ Deno.serve(async (req) => {
     .select("invoice_type, payment_status, shipment_ids, order_ids").eq("invoice_number", number).maybeSingle();
   const type = inv?.invoice_type ?? (number.startsWith("INV-SETTLE-") ? "final_settlement" : number.startsWith("INV-DISP-") ? "dispatch_advance" : null);
   if (!type) return json(req, { error: `Invoice ${number} not found` }, 404);
+  if (type !== "dispatch_advance" && type !== "final_settlement") {
+    return json(req, { error: "Only advance and settlement invoices change Shopify payment status" }, 400);
+  }
   const target: Target = type === "final_settlement" ? "paid" : "partially_paid";
 
   let shipmentIds: string[] = inv?.shipment_ids ?? [];
