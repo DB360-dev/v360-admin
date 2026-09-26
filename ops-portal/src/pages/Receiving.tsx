@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, Inbox } from "lucide-react";
-import { useBatchOrders, useInboundBatches, type OrderWithItems } from "@/hooks/useData";
+import { useAcceptBdStockOrder, useBatchOrders, useInboundBatches, type OrderWithItems } from "@/hooks/useData";
+import { describeError } from "@/lib/errors";
+import { ActionDialog } from "@/components/ActionDialog";
 import { INBOUND_STATUS } from "@/lib/status";
 import { fmtDate, fmtShort, since } from "@/lib/format";
 import type { InboundBatchAdmin } from "@/lib/types";
@@ -15,6 +17,8 @@ import { ReceiveDialog } from "@/components/OrderDialogs";
 function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
   const q = useBatchOrders(batch.id);
   const [receiving, setReceiving] = useState<OrderWithItems | null>(null);
+  const accept = useAcceptBdStockOrder({ inlineErrors: true });
+  const [accepting, setAccepting] = useState<OrderWithItems | null>(null);
   if (q.isLoading) return <Spinner />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   return (
@@ -22,10 +26,10 @@ function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
       <ul className="divide-y divide-line">
         {q.data!
           .map((o) => ({ o, hasHubItems: o.order_items.some((i) => hubQty(i) > 0) }))
-          .filter(({ hasHubItems }) => hasHubItems)
           .sort((a, b) => new Date(b.o.order_date).getTime() - new Date(a.o.order_date).getTime())
-          .map(({ o }) => {
+          .map(({ o, hasHubItems }) => {
             const canReceive = o.status === "dispatched_to_hub" || o.status === "hub_issue";
+            const bdOnly = !hasHubItems;
             return (
               <li key={o.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
                 <div className="w-24">
@@ -33,6 +37,14 @@ function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
                   <div className="text-[12px] text-faint" title="Order date">{fmtShort(o.order_date)}</div>
                 </div>
                 <ul className="min-w-[220px] flex-1 space-y-0.5 text-[13px]">
+                  {bdOnly && (
+                    <li className="mb-1">
+                      <span className="inline-flex rounded bg-sky-500/10 px-1.5 py-0.5 text-[12px] font-medium text-sky-700 dark:text-sky-300">
+                        Fulfilled from Bangladesh warehouse
+                      </span>
+                      <span className="ml-2 text-[12px] text-muted">Nothing to count at the hub</span>
+                    </li>
+                  )}
                   {o.order_items.map((i) => {
                     const pk = hubQty(i), bd = bdQty(i);
                     const pkReceived = Math.max(0, i.received_quantity - bd);
@@ -40,19 +52,27 @@ function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
                       <li key={i.id}>
                         <span className={pk > 0 ? "font-semibold" : "text-faint"}>{pk > 0 ? pk : bd}×</span> {i.product_name}{i.variant ? `, ${i.variant}` : ""}
                         {i.sku && <span className="text-faint"> · {i.sku}</span>}
-                        {bd > 0 && <span className="ml-2 text-[12px] text-muted">{pk > 0 ? `+ ${bd} already` : "already"} in BD stock — not counted</span>}
+                        {bd > 0 && !bdOnly && <span className="ml-2 text-[12px] text-muted">{pk > 0 ? `+ ${bd} already` : "already"} in BD stock — not counted</span>}
                         {o.status === "hub_issue" && pk > 0 && pkReceived < pk && <span className="ml-2 font-medium text-g-problem">{pkReceived} of {pk} received</span>}
                       </li>
                     );
                   })}
                 </ul>
                 <StatusBadge status={o.status} />
-                {canReceive && <Button size="sm" variant="primary" onClick={() => setReceiving(o)}>{o.status === "hub_issue" ? "Recount" : "Receive"}</Button>}
+                {canReceive && (bdOnly
+                  ? <Button size="sm" variant="primary" onClick={() => { accept.reset(); setAccepting(o); }}>Accept</Button>
+                  : <Button size="sm" variant="primary" onClick={() => setReceiving(o)}>{o.status === "hub_issue" ? "Recount" : "Receive"}</Button>)}
               </li>
             );
           })}
       </ul>
       {receiving && <ReceiveDialog order={receiving} items={receiving.order_items} open onClose={() => setReceiving(null)} />}
+      <ActionDialog open={!!accepting} onClose={() => setAccepting(null)} busy={accept.isPending}
+        error={accept.error ? describeError(accept.error) : null}
+        title={`Accept ${accepting?.order_number ?? ""}`}
+        description="Every item in this order is fulfilled from the brand's Bangladesh warehouse, so there's nothing to count or weigh. It becomes ready for shipment and can be added to a shipment for the 50% advance invoice."
+        confirmLabel="Accept" noteLabel="Note"
+        onConfirm={(n) => accepting && accept.mutate({ id: accepting.id, note: n }, { onSuccess: () => setAccepting(null) })} />
     </>
   );
 }

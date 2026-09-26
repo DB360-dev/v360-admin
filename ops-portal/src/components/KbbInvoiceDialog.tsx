@@ -324,7 +324,8 @@ export function KbbInvoiceDialog({
       const totalVal = isAdv ? totalDispatchValue : (totalSettlementDeliveredValue + totalSettlementReturnedValue);
       const advAmt = isAdv ? totalDispatchAdvance50 : 0;
       const netRem = isAdv ? totalDispatchNetRemaining : totalSettlementDelivered50Remaining;
-      const payable = isAdv ? totalDispatchOverallPayable : totalNetSettlementPayable;
+      // What this invoice asks KBB to pay: the 50% advance, or the net settlement.
+      const payable = isAdv ? totalDispatchAdvance50 : totalNetSettlementPayable;
       const brandCnt = fullOrdersByBrand.length;
 
       saveInvoice.mutate({
@@ -681,6 +682,15 @@ export function KbbInvoiceDialog({
                     </table>
                   </div>
 
+                  {/* Amount due on this invoice, shown on its own */}
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-slate-900 bg-slate-50 px-5 py-4">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">Amount due on this invoice</p>
+                      <p className="text-xs text-slate-600">50% advance, payable by KBB on dispatch. The remaining amount is settled on the final settlement invoice.</p>
+                    </div>
+                    <p className="text-2xl font-bold text-slate-900">{fmtNum(totalDispatchAdvance50)} PKR</p>
+                  </div>
+
                   {/* Payment Terms & Remittance Footnote */}
                   <div className="border-t border-slate-300 pt-4 text-xs text-slate-600">
                     <p className="font-bold text-slate-800">Dispatch Payment Terms:</p>
@@ -855,6 +865,15 @@ export function KbbInvoiceDialog({
                     </table>
                   </div>
 
+                  {/* Amount due on this invoice, shown on its own */}
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-slate-900 bg-slate-50 px-5 py-4">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">Amount due on this invoice</p>
+                      <p className="text-xs text-slate-600">Final settlement payable by KBB, after commission and returned-order clawbacks.</p>
+                    </div>
+                    <p className="text-2xl font-bold text-slate-900">{fmtNum(totalNetSettlementPayable)} PKR</p>
+                  </div>
+
                   {/* Payment Terms & Remittance Footnote */}
                   <div className="border-t border-slate-300 pt-4 text-xs text-slate-600">
                     <p className="font-bold text-slate-800">Final Settlement Accounting Notes:</p>
@@ -876,10 +895,10 @@ export function KbbInvoiceDialog({
                 <div className="flex items-start justify-between border-b border-slate-300 pb-4 mb-6">
                   <div>
                     <h2 className="text-xl font-bold tracking-tight text-slate-900">
-                      {invoiceType === "dispatch_advance" ? "Shipment Itemized Product Breakdown" : "Final Settlement Itemized Breakdown"}
+                      {invoiceType === "dispatch_advance" ? "Detailed View: Orders in this Shipment" : "Detailed View: Orders in this Settlement"}
                     </h2>
                     <p className="mt-0.5 text-xs text-slate-600">
-                      Detailed Product & SKU Breakdown Grouped by Brand ({invoiceType === "dispatch_advance" ? "Dispatch Mode" : "Final Settlement Mode"})
+                      Each order at its full order total (items, shipping and discounts included), grouped by brand. These totals make up the Order Value on page 1.
                     </p>
                   </div>
                   <div className="text-right text-xs text-slate-600">
@@ -898,10 +917,14 @@ export function KbbInvoiceDialog({
                     const brandRows = brandGroup.orders.flatMap((order) => {
                       const items = order.order_items || [];
                       const isReturned = isOrderReturned(order.status);
+                      // One amount per order: the order total, shipping included (no separate shipping line).
+                      const orderTotal = Number(order.order_total || order.cod_amount_expected || 0);
+                      brandItemTotalSum += orderTotal;
                       if (!items.length) {
-                        const val = order.cod_amount_expected || order.order_total || 0;
-                        brandItemTotalSum += Number(val);
+                        const val = orderTotal;
                         return [{
+                          orderTotal,
+                          orderRowSpan: 1,
                           orderNumber: order.order_number,
                           status: order.status,
                           isReturned,
@@ -911,16 +934,15 @@ export function KbbInvoiceDialog({
                           variant: "—",
                           unitPrice: Number(val),
                           quantity: 1,
-                          subtotal: Number(val),
                         }];
                       }
-                      return items.map((item) => {
+                      return items.map((item, idx) => {
                         const qty = item.quantity || 1;
                         const price = Number(item.unit_price || 0);
-                        const subtotal = qty * price - Number(item.discount || 0);
                         brandItemQtySum += qty;
-                        brandItemTotalSum += subtotal;
                         return {
+                          orderTotal,
+                          orderRowSpan: idx === 0 ? items.length : 0,
                           orderNumber: order.order_number,
                           status: order.status,
                           isReturned,
@@ -930,7 +952,6 @@ export function KbbInvoiceDialog({
                           variant: item.variant || "—",
                           unitPrice: price,
                           quantity: qty,
-                          subtotal: subtotal,
                         };
                       });
                     });
@@ -944,11 +965,11 @@ export function KbbInvoiceDialog({
                         <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-3 bg-slate-100 -mx-4 -mt-4 p-4 rounded-t-lg">
                           <div>
                             <h3 className="text-base font-bold text-slate-900">{brandGroup.brandName}</h3>
-                            <p className="text-xs text-slate-600">{brandGroup.orders.length} Order(s) in Selection</p>
+                            <p className="text-xs text-slate-600">{brandGroup.orders.length} order(s)</p>
                           </div>
                           <div className="text-right">
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                              Brand Total Value
+                              Brand total (all orders)
                             </span>
                             <p className="text-sm font-bold text-slate-900">{fmtNum(brandItemTotalSum)} PKR</p>
                           </div>
@@ -964,9 +985,8 @@ export function KbbInvoiceDialog({
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-left">Product Name</th>
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-left w-24">SKU</th>
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-left w-20">Variant</th>
-                                <th className="border border-slate-300 px-2.5 py-1.5 text-right w-24">Price (PKR)</th>
-                                <th className="border border-slate-300 px-2.5 py-1.5 text-center w-14">Qty</th>
-                                <th className="border border-slate-300 px-2.5 py-1.5 text-right w-28">Subtotal (PKR)</th>
+                                                                <th className="border border-slate-300 px-2.5 py-1.5 text-center w-14">Qty</th>
+                                <th className="border border-slate-300 px-2.5 py-1.5 text-right w-32">Order Total incl. shipping (PKR)</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1001,22 +1021,21 @@ export function KbbInvoiceDialog({
                                   <td className="border border-slate-300 px-2.5 py-1.5 text-slate-600">
                                     {row.variant}
                                   </td>
-                                  <td className="border border-slate-300 px-2.5 py-1.5 text-right text-slate-800">
-                                    {fmtNum(row.unitPrice)}
-                                  </td>
                                   <td className="border border-slate-300 px-2.5 py-1.5 text-center font-bold text-slate-800">
                                     {row.quantity}
                                   </td>
-                                  <td className="border border-slate-300 px-2.5 py-1.5 text-right font-semibold text-slate-900">
-                                    {fmtNum(row.subtotal)}
-                                  </td>
+                                  {row.orderRowSpan > 0 && (
+                                    <td rowSpan={row.orderRowSpan} className="border border-slate-300 px-2.5 py-1.5 text-right align-middle font-semibold text-slate-900">
+                                      {fmtNum(row.orderTotal)}
+                                    </td>
+                                  )}
                                 </tr>
                               ))}
                             </tbody>
                             <tfoot>
                               <tr className="bg-slate-100 font-bold text-slate-900">
-                                <td colSpan={6} className="border border-slate-300 px-2.5 py-2 text-right">
-                                  {brandGroup.brandName} Total:
+                                <td colSpan={5} className="border border-slate-300 px-2.5 py-2 text-right">
+                                  {brandGroup.brandName} total:
                                 </td>
                                 <td className="border border-slate-300 px-2.5 py-2 text-center text-slate-900">
                                   {brandItemQtySum}

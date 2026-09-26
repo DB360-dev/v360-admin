@@ -1,7 +1,9 @@
 // Supabase Edge Function: receives Shopify webhooks for every connected brand.
 // Deploy with:  supabase functions deploy shopify-webhook --no-verify-jwt
-// Secrets needed: SHOPIFY_API_SECRET (your Shopify app's client secret),
-//                 or the same value saved in the Admin panel (Vault wins).
+// Each brand connects with its own Shopify app, so webhooks are verified with that
+// store's secret (get_shopify_webhook_secret, brand repo migration 030). The shared
+// app's secret (Admin panel / SHOPIFY_API_SECRET) is still accepted for stores
+// connected before per-brand keys.
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically.
 //
 // All the logic (BD filter, duplicates, cancellations, edits) lives in the
@@ -42,8 +44,20 @@ Deno.serve(async (req) => {
   const shop = req.headers.get("x-shopify-shop-domain") ?? "";
   const webhookId = req.headers.get("x-shopify-webhook-id") ?? "";
 
-  const { apiSecret: SHOPIFY_SECRET } = await getShopifyCreds();
-  if (!SHOPIFY_SECRET || !hmac || !safeEqual(await hmacBase64(SHOPIFY_SECRET, raw), hmac)) {
+  const { data: storeSecret, error: secretErr } = shop
+    ? await supabase.rpc("get_shopify_webhook_secret", { p_shop_domain: shop })
+    : { data: null, error: null };
+  if (secretErr) {
+    console.error("get_shopify_webhook_secret failed", secretErr);
+    return new Response("Temporary error", { status: 500 });
+  }
+  const { apiSecret: sharedSecret } = await getShopifyCreds();
+  const secrets = [storeSecret as string | null, sharedSecret].filter((s): s is string => !!s);
+  let verified = false;
+  for (const secret of secrets) {
+    if (hmac && safeEqual(await hmacBase64(secret, raw), hmac)) { verified = true; break; }
+  }
+  if (!verified) {
     return new Response("Invalid signature", { status: 401 });
   }
   if (!webhookId || !topic || !shop) {

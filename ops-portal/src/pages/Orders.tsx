@@ -216,7 +216,7 @@ export function Orders() {
                 <th>Master status</th>
                 <th>Notes</th>
                 <th>Payment status</th>
-                <th>Where</th>
+                <th>Tracking</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -225,8 +225,7 @@ export function Orders() {
                 {rows.map((o) => {
                   return (
                     <tr key={o.id} onClick={() => navigate(`/orders/${o.id}`)} className="cursor-pointer hover:bg-sunken/50">
-                      <td><Link to={`/orders/${o.id}`} onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline">{o.order_number}</Link>
-                      {o.skus && <div className="truncate text-[12px] text-faint">{o.skus}</div>}</td>
+                      <td><Link to={`/orders/${o.id}`} onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline">{o.order_number}</Link></td>
                       <td className="max-w-[160px] truncate">{o.brand_name}</td>
                       <td className="whitespace-nowrap text-muted">{fmtShort(o.order_date)}</td>
                       <td><div className="max-w-[200px] truncate">{o.customer_name ?? "—"}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>

@@ -1,26 +1,44 @@
-// Shopify redirects the merchant here after they approve the app.
+// Shopify redirects the merchant here after they approve (install) the app.
 // Verifies the request, exchanges the code for a token, stores it in Vault,
 // registers order webhooks, then sends the merchant back to the Brand Portal.
 //
-// Secrets: SHOPIFY_API_KEY, SHOPIFY_API_SECRET, BRAND_PORTAL_URL (e.g. https://app.yourdomain.com),
-//          optional SHOPIFY_API_VERSION (default 2026-01).
-//          Client ID + Secret are read from Vault (Admin panel) first, then env.
+// Two kinds of install land here:
+//   • the brand's OWN app, started by shopify-connect. Its Client ID + secret
+//     are parked with the OAuth state (take_shopify_install) and used here.
+//   • the old shared app (shopify-install), using sharedCreds().
+//
+// Secrets: BRAND_PORTAL_URL (e.g. https://app.yourdomain.com), SHOPIFY_API_KEY /
+//          SHOPIFY_API_SECRET or the Admin panel (shared app only), optional SHOPIFY_API_VERSION.
+// Kept in step with brand repo (v360) supabase/functions/shopify-callback/index.ts.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { hasOrderScope, registerWebhook, WEBHOOK_TOPICS } from "../_shared/shopify.ts";
 import { getShopifyCreds } from "../_shared/shopifyCreds.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const PORTAL_URL = (Deno.env.get("BRAND_PORTAL_URL") ?? "http://localhost:5173").replace(/\/$/, "");
-const API_VERSION = Deno.env.get("SHOPIFY_API_VERSION") ?? "2026-01";
+// Must be a full address like https://app.yourdomain.com. Anything else falls back to localhost
+// (and is logged), instead of crashing the function.
+const RAW_PORTAL = (Deno.env.get("BRAND_PORTAL_URL") ?? "").trim().replace(/^["']|["']$/g, "").replace(/\/$/, "");
+const PORTAL_URL = /^https?:\/\/[^\s]+$/.test(RAW_PORTAL) ? RAW_PORTAL : "http://localhost:5173";
+if (PORTAL_URL !== RAW_PORTAL) console.error(`BRAND_PORTAL_URL is missing or invalid ("${RAW_PORTAL}"). Using ${PORTAL_URL}.`);
 
-const WEBHOOK_TOPICS = ["ORDERS_CREATE", "ORDERS_UPDATED", "ORDERS_CANCELLED", "APP_UNINSTALLED"];
+/** The old shared app's keys (connections started by shopify-install): Admin panel first, then env. */
+const sharedCreds = getShopifyCreds;
 
 function back(result: "connected" | "error", reason?: string): Response {
-  const url = new URL(`${PORTAL_URL}/settings`);
-  url.searchParams.set("shopify", result);
-  if (reason) url.searchParams.set("reason", reason);
-  return Response.redirect(url.toString(), 302);
+  if (result === "error") console.error("shopify-callback:", reason);
+  try {
+    const url = new URL(`${PORTAL_URL}/settings`);
+    url.searchParams.set("shopify", result);
+    if (reason) url.searchParams.set("reason", reason);
+    return new Response(null, { status: 302, headers: { Location: url.toString() } });
+  } catch {
+    // Last resort: a readable page instead of a blank "Internal Server Error".
+    const msg = result === "connected" ? "Shopify connected. You can close this tab and return to the portal." : `Shopify connection failed: ${reason ?? "unknown error"}`;
+    return new Response(`<!doctype html><meta charset="utf-8"><p style="font-family:sans-serif;padding:2rem">${msg.replace(/</g, "&lt;")}</p>`,
+      { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+  }
 }
 
 async function hmacHex(secret: string, message: string): Promise<string> {
@@ -38,97 +56,105 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function registerWebhook(shop: string, token: string, topic: string, uri: string) {
-  const endpoint = `https://${shop}/admin/api/${API_VERSION}/graphql.json`;
-  const call = async (field: "uri" | "callbackUrl") => {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
-      body: JSON.stringify({
-        query: `mutation($topic: WebhookSubscriptionTopic!, $sub: WebhookSubscriptionInput!) {
-          webhookSubscriptionCreate(topic: $topic, webhookSubscription: $sub) {
-            webhookSubscription { id } userErrors { field message } } }`,
-        variables: { topic, sub: { [field]: uri, format: "JSON" } },
-      }),
-    });
-    return await res.json();
-  };
-
-  // Newer API versions use `uri`; older ones `callbackUrl`. Try both.
-  let result = await call("uri");
-  if (result.errors) result = await call("callbackUrl");
-
-  const userErrors = result?.data?.webhookSubscriptionCreate?.userErrors ?? [];
-  const alreadyExists = userErrors.some((e: { message: string }) => /already been taken|already exists/i.test(e.message));
-  if (result.errors || (userErrors.length && !alreadyExists)) {
-    throw new Error(`${topic}: ${JSON.stringify(result.errors ?? userErrors)}`);
-  }
+interface PendingInstall {
+  brand_id: string; shop_domain: string; expires_at: string;
+  client_id: string | null; client_secret: string | null;
 }
 
 Deno.serve(async (req) => {
+  try {
+    return await handle(req);
+  } catch (e) {
+    console.error("shopify-callback crashed", e);
+    return back("error", "Something went wrong while connecting to Shopify. Please try again.");
+  }
+});
+
+async function handle(req: Request): Promise<Response> {
   const params = new URL(req.url).searchParams;
   const shop = params.get("shop") ?? "";
   const code = params.get("code") ?? "";
   const state = params.get("state") ?? "";
   const hmac = params.get("hmac") ?? "";
 
-  const { apiKey: API_KEY, apiSecret: API_SECRET } = await getShopifyCreds();
-  if (!API_KEY || !API_SECRET) return back("error", "Shopify is not configured on the server");
+  if (shop && hmac && !state) {
+    return back("error", "Please start the connection from Settings in the portal, using Connect store.");
+  }
   if (!shop || !code || !state || !hmac) return back("error", "The Shopify response was incomplete");
 
-  // 1. Verify the request came from Shopify
+  const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+
+  // 1. Match it to the install we started (single use), and pick the app's keys
+  const { data: st, error: stErr } = await admin.rpc("take_shopify_install", { p_state: state });
+  if (stErr) throw stErr;
+  const pending = st as PendingInstall | null;
+  if (!pending) return back("error", "This connection link has expired. Please try again.");
+
+  const brandApp = !!(pending.client_id && pending.client_secret);
+  const { apiKey, apiSecret } = brandApp
+    ? { apiKey: pending.client_id!, apiSecret: pending.client_secret! }
+    : await sharedCreds();
+  if (!apiKey || !apiSecret) return back("error", "Shopify is not configured on the server");
+
+  // 2. Verify the request came from Shopify, signed with that app's secret
   const message = [...params.entries()]
     .filter(([k]) => k !== "hmac" && k !== "signature")
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k}=${v}`)
     .join("&");
-  if (!safeEqual(await hmacHex(API_SECRET, message), hmac)) return back("error", "Could not verify the request");
-
-  const admin = createClient(SUPABASE_URL, SERVICE_KEY);
-
-  // 2. Match it to the install we started
-  const { data: st } = await admin.from("shopify_oauth_states").select("*").eq("state", state).maybeSingle();
-  if (!st) return back("error", "This connection link has expired. Please try again.");
-  await admin.from("shopify_oauth_states").delete().eq("state", state);
-  if (st.shop_domain !== shop) return back("error", "Store address did not match");
-  if (new Date(st.expires_at) < new Date()) return back("error", "This connection link has expired. Please try again.");
+  if (!safeEqual(await hmacHex(apiSecret, message), hmac)) return back("error", "Could not verify the request");
+  if (pending.shop_domain !== shop) return back("error", "Store address did not match");
+  if (new Date(pending.expires_at) < new Date()) return back("error", "This connection link has expired. Please try again.");
 
   // 3. Exchange the code for a token
-  let token: string, scopes: string;
+  let token: string, scopes: string, expiresIn: number | null;
   try {
     const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ client_id: API_KEY, client_secret: API_SECRET, code }),
+      body: JSON.stringify({ client_id: apiKey, client_secret: apiSecret, code }),
     });
     if (!res.ok) throw new Error(`status ${res.status}`);
     const data = await res.json();
     token = data.access_token;
     scopes = data.scope ?? "";
+    expiresIn = data.expires_in ? Number(data.expires_in) : null;
     if (!token) throw new Error("no token");
   } catch (e) {
     console.error("token exchange failed", e);
     return back("error", "Shopify did not issue an access token. Please try again.");
   }
+  console.log("shopify token granted", { shop, scopes, brandApp });
 
   // 4. Store it
-  const { error: saveErr } = await admin.rpc("save_shopify_connection", {
-    p_brand_id: st.brand_id, p_shop_domain: shop, p_access_token: token, p_scopes: scopes,
-  });
+  const { error: saveErr } = brandApp
+    ? await admin.rpc("save_shopify_app_connection", {
+      p_brand_id: pending.brand_id, p_shop_domain: shop, p_client_id: apiKey, p_client_secret: apiSecret,
+      p_access_token: token, p_scopes: scopes, p_expires_in: expiresIn,
+    })
+    : await admin.rpc("save_shopify_connection", {
+      p_brand_id: pending.brand_id, p_shop_domain: shop, p_access_token: token, p_scopes: scopes,
+    });
   if (saveErr) {
     console.error("save failed", saveErr);
     return back("error", saveErr.message);
   }
 
-  // 5. Register webhooks
+  // 5. Register webhooks. Order topics need read_orders on the app.
+  if (!hasOrderScope(scopes)) {
+    console.error("missing order scope; cannot register order webhooks", { shop, scopes });
+    await admin.from("shopify_connections").update({ status: "error" }).eq("brand_id", pending.brand_id);
+    return back("error", "Shopify did not grant order access. Add the read_orders access scope to your app, release a new version, then connect again.");
+  }
+
   const webhookUrl = `${SUPABASE_URL}/functions/v1/shopify-webhook`;
   try {
     for (const topic of WEBHOOK_TOPICS) await registerWebhook(shop, token, topic, webhookUrl);
   } catch (e) {
-    console.error("webhook registration failed", e);
-    await admin.from("shopify_connections").update({ status: "error" }).eq("brand_id", st.brand_id);
-    return back("error", "Connected, but order notifications could not be set up. Please contact support.");
+    console.error("webhook registration failed", e, { shop, scopes });
+    await admin.from("shopify_connections").update({ status: "error" }).eq("brand_id", pending.brand_id);
+    return back("error", "Connected, but new orders can't be sent to us yet. In your Shopify app, turn on protected customer data access (name, email, phone, address), release a new version, then connect again.");
   }
 
   return back("connected");
-});
+}

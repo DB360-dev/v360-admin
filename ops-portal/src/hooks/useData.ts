@@ -787,6 +787,11 @@ export const useShopifyFulfill = () => {
   });
 };
 
+/** Order fully fulfilled from Bangladesh stock: accept at the hub without counting. */
+export const useAcceptBdStockOrder = (o?: ActionOptions) => useOpsAction(
+  (v: { id: string; note?: string }) => rpc("accept_bd_stock_order", { p_order_id: v.id, p_note: trimOrNull(v.note) }),
+  "Accepted — ready for shipment", o);
+
 export const useMarkDelivered = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; cash: number; note?: string }) => rpc("mark_delivered", { p_order_id: v.id, p_cod_collected: v.cash, p_note: trimOrNull(v.note) }),
   "Marked as delivered", o);
@@ -1068,7 +1073,10 @@ export function useSaveOrderInternalNote(orderId: string, role: OrderNoteRole, o
     },
     onSuccess: () => { toast.success("Note saved"); },
     onError: (e) => { if (!o?.inlineErrors) toast.error(describeError(e)); },
-    onSettled: () => qc.invalidateQueries({ queryKey: k("internal-note", orderId, role) }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: k("internal-note", orderId, role) });
+      qc.invalidateQueries({ queryKey: k("orders") });
+    },
   });
 }
 
