@@ -1,15 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Inbox, Search, StickyNote, X } from "lucide-react";
 import { PAGE_SIZE, useBrandOptions, useOrderList, useStatusCounts } from "@/hooks/useData";
 import { ORDER_VIEWS, RETURNED_DISCREPANCY_LABEL, STATUS, type StatusGroup } from "@/lib/status";
-import { fmtMoney, fmtShort, since } from "@/lib/format";
+import { fmtMoney, fmtShort, plural, since } from "@/lib/format";
 import type { OrderOverview, OrderStatus } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
 import { CheckNotesModal } from "@/components/CheckNotesModal";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { BulkOrderActions, useBulkSelectable } from "@/components/BulkOrderActions";
 
 function useDebounced<T>(value: T, ms = 300) {
   const [v, setV] = useState(value);
@@ -185,6 +187,15 @@ export function Orders() {
   const total = q.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const filters = !!(search || from || to || brandId || picks.length);
+
+  // Selection for bulk actions (only orders that have at least one bulk action at their stage)
+  const canBulk = useBulkSelectable();
+  const [selected, setSelected] = useState<Map<string, OrderOverview>>(new Map());
+  useEffect(() => setSelected(new Map()), [params.toString(), search]); // eslint-disable-line
+  const selectable = useMemo(() => rows.filter((r) => canBulk(r.status)), [rows, canBulk]);
+  const allSelected = selectable.length > 0 && selectable.every((r) => selected.has(r.id));
+  const toggle = (r: OrderOverview) => setSelected((m) => { const n = new Map(m); if (n.has(r.id)) n.delete(r.id); else n.set(r.id, r); return n; });
+  const toggleAll = () => setSelected(allSelected ? new Map() : new Map(selectable.map((r) => [r.id, r])));
   const count = (ss: OrderStatus[] | null) => counts ? (ss ?? Object.keys(counts) as (keyof typeof counts)[]).reduce((n, s) => n + (counts[s] ?? 0), 0) : null;
 
   return (
@@ -234,11 +245,23 @@ export function Orders() {
         {filters && <Button variant="ghost" size="sm" onClick={() => { setSearchInput(""); update({ q: null, from: null, to: null, brand: null, fs: null, bs: null, ms: null }); }}><X className="h-3.5 w-3.5" /> Clear</Button>}
       </div>
 
+      {selected.size > 0 && (
+        <div className="sticky top-14 z-10 mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary-soft px-4 py-2.5 lg:top-2">
+          <span className="mr-auto text-[13.5px] font-medium text-primary">{plural(selected.size, "order")} selected</span>
+          <BulkOrderActions orders={[...selected.values()]} onDone={() => setSelected(new Map())} />
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Map())}>Clear</Button>
+        </div>
+      )}
+
       <div className="panel overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1100px] text-[13.5px]">
             <thead className="table-head">
               <tr>
+                <th className="w-10">
+                  <Checkbox aria-label="Select all orders that have a bulk action" checked={allSelected}
+                    indeterminate={!allSelected && selected.size > 0} disabled={selectable.length === 0} onChange={toggleAll} />
+                </th>
                 <th>Order</th>
                 <th>Brand</th>
                 <th>Date</th>
@@ -253,11 +276,15 @@ export function Orders() {
                 <th>Actions</th>
               </tr>
             </thead>
-            {q.isLoading ? <SkeletonRows cols={12} /> : (
+            {q.isLoading ? <SkeletonRows cols={13} /> : (
               <tbody className={`table-body ${q.isFetching ? "opacity-70" : ""}`}>
                 {rows.map((o) => {
                   return (
                     <tr key={o.id} onClick={() => navigate(`/orders/${o.id}`)} className="cursor-pointer hover:bg-sunken/50">
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <Checkbox aria-label={`Select ${o.order_number}`} checked={selected.has(o.id)} disabled={!canBulk(o.status)}
+                          title={canBulk(o.status) ? undefined : "No bulk actions for orders at this stage"} onChange={() => toggle(o)} />
+                      </td>
                       <td><Link to={`/orders/${o.id}`} onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline">{o.order_number}</Link></td>
                       <td className="max-w-[160px] truncate">{o.brand_name}</td>
                       <td className="whitespace-nowrap text-muted">{fmtShort(o.order_date)}</td>

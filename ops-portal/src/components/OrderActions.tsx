@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { describeError } from "@/lib/errors";
 import { DEDICATED, NOTE_REQUIRED, STATUS, TERMINAL } from "@/lib/status";
-import type { OrderItem, OrderStatus, Order, ShipmentStatus } from "@/lib/types";
+import type { OrderItem, OrderStatus, Order, ShipmentStatus, StatusTransition } from "@/lib/types";
 import { useOps } from "@/context/OpsContext";
 import {
   useChangeStatus, useHold, useOverride, useRemoveFromShipment, useResume, useTransitions,
@@ -11,7 +11,7 @@ import { ActionDialog } from "./ActionDialog";
 import { DeliveredDialog, EditCustomerDialog, ReceiveDialog, ReturnDialog, TrackingDialog } from "./OrderDialogs";
 
 /** Button wording for each target status. */
-const VERB: Partial<Record<OrderStatus, string>> = {
+export const VERB: Partial<Record<OrderStatus, string>> = {
   confirmation_pending: "Start confirmation",
   confirmed: "Confirmed",
   customer_unreachable: "Unreachable",
@@ -25,24 +25,27 @@ const VERB: Partial<Record<OrderStatus, string>> = {
   returned: "Mark returned",
 };
 const PRIMARY: OrderStatus[] = ["confirmed", "out_for_delivery", "ready_for_shipment"];
-const DANGER: OrderStatus[] = ["cancelled", "delivery_failed", "returned"];
+export const DANGER: OrderStatus[] = ["cancelled", "delivery_failed", "returned"];
 const EDITABLE: OrderStatus[] = ["new", "confirmation_pending", "customer_unreachable", "needs_amendment", "brand_confirmed", "confirmed", "brand_preparing"];
 
 type Dlg =
   | { kind: "status"; to: OrderStatus }
   | { kind: "hold" | "resume" | "override" | "remove" | "delivered" | "tracking" | "ofd" | "receive" | "edit" | "return" };
 
+/** Status moves this role may make from `status` (the order page's status buttons). */
+export function availableTransitions(t: StatusTransition[], status: OrderStatus, isV360: boolean): OrderStatus[] {
+  const set = new Set<OrderStatus>();
+  for (const r of t) {
+    if (r.from_status !== status || DEDICATED.includes(r.to_status) || r.to_status === status) continue;
+    if (isV360 || r.actor === "partner") set.add(r.to_status);
+  }
+  return [...set];
+}
+
 export function useAvailableTransitions(status: OrderStatus): OrderStatus[] {
   const { isV360 } = useOps();
   const t = useTransitions().data ?? [];
-  return useMemo(() => {
-    const set = new Set<OrderStatus>();
-    for (const r of t) {
-      if (r.from_status !== status || DEDICATED.includes(r.to_status) || r.to_status === status) continue;
-      if (isV360 || r.actor === "partner") set.add(r.to_status);
-    }
-    return [...set];
-  }, [t, status, isV360]);
+  return useMemo(() => availableTransitions(t, status, isV360), [t, status, isV360]);
 }
 
 function hasVisible(children: ReactNode): boolean {

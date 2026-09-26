@@ -5,6 +5,9 @@
 //
 // * First call creates the fulfillment (customer is notified by Shopify).
 // * Later calls update the tracking on that same fulfillment.
+// * Once the order is delivery_failed or returned, the call cancels our
+//   fulfillment instead, so Shopify shows the order as unfulfilled again.
+//   If it goes out for delivery again, the next call creates a new one.
 // The result (fulfillment id or error) is stored on the order.
 // Needs the store to have granted write_merchant_managed_fulfillment_orders
 // (plus assigned / third-party variants) — see shopify-install SCOPES.
@@ -62,8 +65,12 @@ Deno.serve(async (req) => {
     .select("id, brand_id, order_number, shopify_order_id, status, delivery_courier, delivery_tracking_number, delivery_tracking_url, shopify_fulfillment_id")
     .eq("id", body.order_id).maybeSingle();
   if (oErr || !o) return json(req, { error: "Order not found" }, 404);
-  if (!o.delivery_tracking_number) return json(req, { error: "Add delivery tracking first" }, 409);
-  if (!["out_for_delivery", "delivered", "delivery_failed"].includes(o.status)) {
+  const undelivered = ["delivery_failed", "returned"].includes(o.status);
+  if (undelivered && !o.shopify_fulfillment_id) {
+    return json(req, { skipped: true, reason: "Not delivered, and not fulfilled in Shopify" });
+  }
+  if (!undelivered && !o.delivery_tracking_number) return json(req, { error: "Add delivery tracking first" }, 409);
+  if (!undelivered && !["out_for_delivery", "delivered"].includes(o.status)) {
     return json(req, { skipped: true, reason: "Order is not out for delivery yet" });
   }
 
@@ -85,6 +92,22 @@ Deno.serve(async (req) => {
   };
 
   try {
+    // Delivery failed / returned: undo our fulfillment so Shopify doesn't show it as fulfilled.
+    if (undelivered) {
+      const r = await gql(conn.shop_domain, token as string, `
+        mutation($id: ID!) { fulfillmentCancel(id: $id) { fulfillment { id status } userErrors { message } } }`,
+        { id: o.shopify_fulfillment_id });
+      if (accessDenied(r)) return await fail("The store hasn't granted fulfillment access. Reconnect it from the brand portal.", 403);
+      const err = userErrorText(r.data?.fulfillmentCancel?.userErrors) ?? (r.errors ? JSON.stringify(r.errors) : null);
+      if (err) return await fail(err);
+      await admin.from("orders").update({
+        shopify_fulfillment_id: null, shopify_fulfilled_at: null, shopify_fulfillment_error: null,
+      }).eq("id", o.id);
+      await admin.from("order_events").insert({ order_id: o.id, actor_label: "Shopify", action: "Shopify fulfillment cancelled",
+        note: o.status === "returned" ? "Order returned" : "Delivery failed" });
+      return json(req, { cancelled: true });
+    }
+
     // Already fulfilled by us: just update the tracking.
     if (o.shopify_fulfillment_id) {
       const r = await gql(conn.shop_domain, token as string, `

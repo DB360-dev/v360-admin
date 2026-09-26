@@ -73,7 +73,7 @@ export function TrackingDialog({ order, open, onClose, outForDelivery = false }:
   const done = () => {
     onClose();
     // Push to Shopify when the order is (now) out for delivery or later.
-    if (outForDelivery || ["out_for_delivery", "delivered", "delivery_failed"].includes(order.status)) fulfill.mutate(order.id);
+    if (outForDelivery || ["out_for_delivery", "delivered"].includes(order.status)) fulfill.mutate(order.id);
   };
   const submit = () => {
     const e: typeof errs = {};
@@ -129,7 +129,7 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
   const missing = parsed.filter(({ exp, n }) => n < exp);
   const weightRows = pkItems.map((i) => ({ i, raw: (weights[i.id] ?? "").trim(), w: Number(weights[i.id]) }));
   const weightMissing = weightRows.some((r) => r.raw === "" || !Number.isFinite(r.w) || r.w <= 0);
-  const orderWeight = weightMissing ? null : weightRows.reduce((s, r) => s + r.w * hubQty(r.i), 0);
+  const orderWeight = weightMissing ? null : Math.round(weightRows.reduce((s, r) => s + r.w * hubQty(r.i), 0) * 1000) / 1000;
   const submit = () => {
     if (weightMissing) { setErr("Enter the weight (kg) of every item"); return; }
     setErr(null);

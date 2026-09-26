@@ -1,13 +1,14 @@
-// Supabase Edge Function: updates the Shopify payment status of every order
-// on an invoice once that invoice is marked paid in the ops portal.
-//   50% dispatch advance invoice paid -> manual payment of 50% of the order
-//                                        total  => Shopify "Partially paid"
-//   final settlement invoice paid     -> mark as paid => Shopify "Paid"
+// Supabase Edge Function: tags every order on an invoice in the brand's Shopify
+// store once that invoice is marked paid in the ops portal.
+//   50% dispatch advance invoice paid -> tag "50% Advance Received"
+//   final settlement invoice paid     -> tag "Full Payment Received"
 //                                        (delivered orders only; returned /
 //                                        failed / cancelled orders are skipped)
-// Idempotent: orders already at (or past) the target status are skipped.
+// Shopify's payment status is left alone: recording a partial payment through
+// the API only works on Shopify Plus stores. tagsAdd keeps the order's
+// existing tags. Idempotent: orders that already have the tag are skipped.
 // Deploy with:  supabase functions deploy shopify-payment-sync
-// Needs the store to have granted write_orders — see shopify-install SCOPES.
+// Needs the store to have granted write_orders.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders, json } from "../_shared/cors.ts";
@@ -18,6 +19,7 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const API_VERSION = Deno.env.get("SHOPIFY_API_VERSION") ?? "2026-01";
 
 type Target = "partially_paid" | "paid";
+const TAG: Record<Target, string> = { partially_paid: "50% Advance Received", paid: "Full Payment Received" };
 type Gql = { data?: Record<string, any>; errors?: unknown };
 type Store = { shop: string; token: string } | { error: string };
 type OrderRow = {
@@ -35,7 +37,10 @@ async function gql(shop: string, token: string, query: string, variables: Record
   if (!res.ok) throw new Error(`Shopify returned ${res.status}`);
   const r = await res.json() as Gql;
   if (JSON.stringify(r.errors ?? "").includes("ACCESS_DENIED")) {
-    throw new Error("The store hasn't granted order write access. Reconnect it from the brand portal.");
+    // Keep Shopify's own wording: it names the scope or permission that is missing.
+    console.error("Shopify ACCESS_DENIED", shop, JSON.stringify(r.errors));
+    const detail = Array.isArray(r.errors) ? r.errors.map((e: { message?: string }) => e.message).filter(Boolean).join("; ") : "";
+    throw new Error(`Shopify denied access${detail ? ` (${detail})` : ""}. Grant the missing access in the store's app, then reconnect it from the brand portal.`);
   }
   if (r.errors) throw new Error(JSON.stringify(r.errors));
   return r;
@@ -114,7 +119,7 @@ Deno.serve(async (req) => {
   };
 
   const summary = { updated: 0, already: 0, skipped: 0, failed: 0, errors: [] as { order_number: string; message: string }[] };
-  const label = target === "paid" ? "paid" : "partially paid";
+  const label = `tagged "${TAG[target]}"`;
 
   for (const o of orders) {
     if (o.status === "cancelled") { summary.skipped++; continue; }
@@ -125,53 +130,21 @@ Deno.serve(async (req) => {
       const store = await storeFor(o.brand_id);
       if ("error" in store) throw new Error(store.error);
       const id = `gid://shopify/Order/${o.shopify_order_id}`;
-      const q = await gql(store.shop, store.token, `
-        query($id: ID!) { order(id: $id) {
-          displayFinancialStatus canMarkAsPaid paymentGatewayNames
-          currentTotalPriceSet { shopMoney { amount currencyCode } }
-          totalOutstandingSet { shopMoney { amount currencyCode } } } }`, { id });
+      const q = await gql(store.shop, store.token, `query($id: ID!) { order(id: $id) { tags } }`, { id });
       const so = q.data?.order;
       if (!so) throw new Error("Order not found in Shopify");
-      const fin: string = so.displayFinancialStatus;
-
-      let already = fin === "PAID" || (target === "partially_paid" && fin === "PARTIALLY_PAID");
-      if (!already && target === "partially_paid") {
-        const total = Number(so.currentTotalPriceSet.shopMoney.amount);
-        const outstanding = Number(so.totalOutstandingSet.shopMoney.amount);
-        const amount = Math.min(Math.round(total * 50) / 100, outstanding);
-        if (amount <= 0) already = true;
-        else {
-          // Shopify only accepts a manual payment under a payment method enabled
-          // on the shop, so use the one the order was placed with (e.g. COD),
-          // then fall back to Shopify's default.
-          const pay = async (method: string | null) => {
-            const r = await gql(store.shop, store.token, `
-              mutation($id: ID!, $amount: MoneyInput!, $method: String) {
-                orderCreateManualPayment(id: $id, amount: $amount, paymentMethodName: $method) {
-                  order { displayFinancialStatus } userErrors { message } } }`,
-              { id, method, amount: { amount: amount.toFixed(2), currencyCode: so.currentTotalPriceSet.shopMoney.currencyCode } });
-            return userErr(r.data?.orderCreateManualPayment?.userErrors);
-          };
-          const gateway: string | null = (so.paymentGatewayNames ?? []).find((g: string) => g && g !== "manual") ?? null;
-          let e = gateway ? await pay(gateway) : "no gateway";
-          if (e) e = await pay(null);
-          if (e) {
-            throw new Error(/not configured/i.test(e)
-              ? `${e} Enable a manual payment method (e.g. Cash on Delivery) in the store's Shopify Settings → Payments.`
-              : e);
-          }
-        }
-      } else if (!already) {
-        if (!so.canMarkAsPaid) throw new Error(`Shopify can't mark this order as paid (it is ${fin.toLowerCase().replace(/_/g, " ")})`);
+      const tag = TAG[target];
+      const already = (so.tags as string[]).some((t) => t.toLowerCase() === tag.toLowerCase());
+      if (!already) {
         const r = await gql(store.shop, store.token, `
-          mutation($input: OrderMarkAsPaidInput!) {
-            orderMarkAsPaid(input: $input) { order { displayFinancialStatus } userErrors { message } } }`,
-          { input: { id } });
-        const e = userErr(r.data?.orderMarkAsPaid?.userErrors);
+          mutation($id: ID!, $tags: [String!]!) {
+            tagsAdd(id: $id, tags: $tags) { node { id } userErrors { message } } }`,
+          { id, tags: [tag] });
+        const e = userErr(r.data?.tagsAdd?.userErrors);
         if (e) throw new Error(e);
       }
 
-      await record(o, `Shopify marked ${label}`, `Invoice ${number}${already ? " (already in Shopify)" : ""}`, {
+      await record(o, `Shopify order ${label}`, `Invoice ${number}${already ? " (already in Shopify)" : ""}`, {
         shopify_payment_synced: target, shopify_payment_synced_at: new Date().toISOString(), shopify_payment_error: null,
       });
       if (already) summary.already++; else summary.updated++;
@@ -179,7 +152,7 @@ Deno.serve(async (req) => {
       const message = e instanceof Error ? e.message : "Shopify request failed";
       summary.failed++;
       summary.errors.push({ order_number: o.order_number, message });
-      await record(o, "Shopify payment update failed", `Invoice ${number}: ${message}`, { shopify_payment_error: message });
+      await record(o, "Shopify payment tag failed", `Invoice ${number}: ${message}`, { shopify_payment_error: message });
     }
   }
 

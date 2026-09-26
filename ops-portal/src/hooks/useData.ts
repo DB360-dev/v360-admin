@@ -507,9 +507,58 @@ async function rpc<T = unknown>(name: string, args: Record<string, unknown> = {}
 
 const trimOrNull = (s?: string | null) => (s && s.trim() ? s.trim() : null);
 
+/** Statuses where the customer didn't get the order, so any Shopify fulfillment must be undone. */
+const UNDELIVERED: OrderStatus[] = ["delivery_failed", "returned"];
+
+/** Undo the Shopify fulfillment of orders that weren't delivered. Never blocks the status change. */
+async function unfulfillInShopify(orderIds: string[]) {
+  const results = await Promise.allSettled(orderIds.map(async (id) => {
+    const { data, error } = await supabase.functions.invoke("shopify-fulfill", { body: { order_id: id } });
+    if (error) throw new Error(await describeFunctionError(error));
+    return data as { cancelled?: boolean };
+  }));
+  const cancelled = results.filter((r) => r.status === "fulfilled" && r.value?.cancelled).length;
+  const failed = results.flatMap((r) => (r.status === "rejected" ? [describeError(r.reason)] : []));
+  if (cancelled) toast.success(`Shopify: ${cancelled} order${cancelled === 1 ? "" : "s"} set back to unfulfilled`);
+  if (failed.length) toast.error(`Shopify fulfillment not cancelled: ${[...new Set(failed)].join("; ")}`, { duration: 12000 });
+}
+
 export const useChangeStatus = (o?: ActionOptions) => useOpsAction(
-  (v: { id: string; to: OrderStatus; note?: string }) => rpc("change_order_status", { p_order_id: v.id, p_to: v.to, p_note: trimOrNull(v.note) }),
+  async (v: { id: string; to: OrderStatus; note?: string }) => {
+    await rpc("change_order_status", { p_order_id: v.id, p_to: v.to, p_note: trimOrNull(v.note) });
+    if (UNDELIVERED.includes(v.to)) void unfulfillInShopify([v.id]);
+  },
   "Status updated", o);
+
+export type BulkOpsAction = { kind: "status"; to: OrderStatus } | { kind: "hold" } | { kind: "resume" };
+
+/**
+ * Applies one action to several orders. Each order goes through the same RPC as the order page,
+ * one at a time, so one refusal doesn't stop the rest; the toast says how many moved and why others didn't.
+ */
+export function useBulkOrderAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (v: { ids: string[]; action: BulkOpsAction; note?: string }) => {
+      const run = (id: string) =>
+        v.action.kind === "hold" ? rpc("hold_order", { p_order_id: id, p_reason: (v.note ?? "").trim() })
+        : v.action.kind === "resume" ? rpc("resume_order", { p_order_id: id, p_note: trimOrNull(v.note) })
+        : rpc("change_order_status", { p_order_id: id, p_to: v.action.to, p_note: trimOrNull(v.note) });
+      const results = await Promise.allSettled(v.ids.map(run));
+      const failed = results.flatMap((r) => (r.status === "rejected" ? [describeError(r.reason)] : []));
+      if (v.action.kind === "status" && UNDELIVERED.includes(v.action.to)) {
+        void unfulfillInShopify(v.ids.filter((_, i) => results[i].status === "fulfilled"));
+      }
+      return { ok: results.length - failed.length, failed };
+    },
+    onSuccess: ({ ok, failed }) => {
+      if (ok > 0) toast.success(`${ok} order${ok === 1 ? "" : "s"} updated`);
+      if (failed.length > 0) toast.error(`${failed.length} order${failed.length === 1 ? "" : "s"} couldn't be updated: ${[...new Set(failed)].join("; ")}`);
+    },
+    onError: (e) => toast.error(describeError(e)),
+    onSettled: () => qc.invalidateQueries({ queryKey: ROOT }),
+  });
+}
 
 export const useHold = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; reason: string }) => rpc("hold_order", { p_order_id: v.id, p_reason: v.reason.trim() }), "Order put on hold", o);
@@ -518,7 +567,10 @@ export const useResume = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; note?: string }) => rpc("resume_order", { p_order_id: v.id, p_note: trimOrNull(v.note) }), "Order resumed", o);
 
 export const useOverride = (o?: ActionOptions) => useOpsAction(
-  (v: { id: string; to: OrderStatus; reason: string }) => rpc("admin_override_status", { p_order_id: v.id, p_to: v.to, p_reason: v.reason.trim() }),
+  async (v: { id: string; to: OrderStatus; reason: string }) => {
+    await rpc("admin_override_status", { p_order_id: v.id, p_to: v.to, p_reason: v.reason.trim() });
+    if (UNDELIVERED.includes(v.to)) void unfulfillInShopify([v.id]);
+  },
   "Status overridden", o);
 
 export const useAddNote = (o?: ActionOptions) => useOpsAction(
@@ -782,10 +834,11 @@ export const useShopifyFulfill = () => {
     mutationFn: async (orderId: string) => {
       const { data, error } = await supabase.functions.invoke("shopify-fulfill", { body: { order_id: orderId } });
       if (error) throw new Error(await describeFunctionError(error));
-      return data as { fulfilled?: boolean; updated?: boolean; skipped?: boolean; reason?: string };
+      return data as { fulfilled?: boolean; updated?: boolean; cancelled?: boolean; skipped?: boolean; reason?: string };
     },
     onSuccess: (r) => {
-      if (r.fulfilled) toast.success("Fulfilled in Shopify with the tracking");
+      if (r.cancelled) toast.success("Shopify fulfillment cancelled: the order shows as unfulfilled again");
+      else if (r.fulfilled) toast.success("Fulfilled in Shopify with the tracking");
       else if (r.updated) toast.success("Tracking updated in Shopify");
     },
     onError: (e) => toast.error(`Shopify not updated: ${describeError(e)}`),
@@ -1197,16 +1250,16 @@ export function useSaveInvoice(o?: { onSuccess?: () => void }) {
   });
 }
 
-/** Once an invoice is paid, push its orders' payment status to Shopify
- *  (advance -> partially paid, settlement -> paid). Never blocks the status change. */
+/** Once an invoice is paid, tag its orders in Shopify
+ *  (advance -> "50% Advance Received", settlement -> "Full Payment Received"). Never blocks the status change. */
 async function pushInvoicePaymentToShopify(invoiceNumber: string) {
-  const id = toast.loading("Updating payment status in Shopify…");
+  const id = toast.loading("Tagging orders in Shopify…");
   try {
     const { data, error } = await supabase.functions.invoke("shopify-payment-sync", { body: { invoice_number: invoiceNumber } });
     if (error) throw new Error(await describeFunctionError(error));
     const r = data as { target: string; updated: number; already: number; skipped: number; failed: number; errors: { order_number: string; message: string }[] };
-    const what = r.target === "paid" ? "paid" : "partially paid";
-    const parts = [`${r.updated} marked ${what}`, r.already && `${r.already} already were`, r.skipped && `${r.skipped} skipped`].filter(Boolean).join(", ");
+    const what = r.target === "paid" ? "Full Payment Received" : "50% Advance Received";
+    const parts = [`${r.updated} tagged "${what}"`, r.already && `${r.already} already tagged`, r.skipped && `${r.skipped} skipped`].filter(Boolean).join(", ");
     if (r.failed) {
       toast.error(`Shopify: ${parts}, ${r.failed} failed (${r.errors.slice(0, 3).map((e) => `${e.order_number}: ${e.message}`).join("; ")})`, { id, duration: 12000 });
     } else {

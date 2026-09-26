@@ -324,9 +324,9 @@ export function OrderDetail() {
                 ...(o.delivery_tracking_url ? [["Tracking link", <a key="tl" href={o.delivery_tracking_url} target="_blank" rel="noreferrer" className="link break-all">{o.delivery_tracking_url}</a>] as [string, ReactNode]] : []),
                 ...((o.shopify_fulfillment_id || o.shopify_fulfillment_error || ["out_for_delivery", "delivered", "delivery_failed"].includes(o.status))
                   ? [["Shopify", <ShopifyFulfillment key="sf" order={o} canRetry={isV360 || isKbb} />] as [string, ReactNode]] : []),
-                ...((o.shopify_payment_synced || o.shopify_payment_error) ? [["Shopify payment", o.shopify_payment_error
+                ...((o.shopify_payment_synced || o.shopify_payment_error) ? [["Shopify payment tag", o.shopify_payment_error
                   ? <span key="sp" className="text-g-problem">Not updated: {o.shopify_payment_error}</span>
-                  : <span key="sp" className="text-g-done">{o.shopify_payment_synced === "paid" ? "Paid" : "Partially paid"} {fmtDateTime(o.shopify_payment_synced_at ?? null)}</span>] as [string, ReactNode]] : []),
+                  : <span key="sp" className="text-g-done">{o.shopify_payment_synced === "paid" ? "Full Payment Received" : "50% Advance Received"} {fmtDateTime(o.shopify_payment_synced_at ?? null)}</span>] as [string, ReactNode]] : []),
                 ["Delivered", fmtDateTime(o.delivered_at)],
                 ["Failure reason", o.failure_reason],
                 ...(o.return_disposition ? [["Return decision", RETURN_DISPOSITION[o.return_disposition] ?? o.return_disposition] as [string, ReactNode]] : []),
