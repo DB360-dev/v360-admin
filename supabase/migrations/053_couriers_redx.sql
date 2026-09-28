@@ -170,7 +170,14 @@ declare
 begin
   if not can_manage_couriers() then raise exception 'Your role can''t change courier settings'; end if;
   if p_courier <> 'redx' then raise exception 'Unknown courier'; end if;
-  if coalesce(trim(p_base_url), '') !~* '^https://' then raise exception 'The API base URL must start with https://'; end if;
+  -- RedX hosts only: the stored token is sent to this address.
+  if coalesce(trim(p_base_url), '') !~* '^https://(openapi|sandbox)\.redx\.com\.bd(/|$)' then
+    raise exception 'The API base URL must be openapi.redx.com.bd or sandbox.redx.com.bd';
+  end if;
+  -- https only: the link is shown to staff and sent to Shopify.
+  if coalesce(trim(p_tracking_url_template), '') !~* '^https://' then
+    raise exception 'The tracking link must start with https://';
+  end if;
   if position('{tracking}' in coalesce(p_tracking_url_template, '')) = 0 then
     raise exception 'The tracking link must contain {tracking}';
   end if;

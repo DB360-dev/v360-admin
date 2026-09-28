@@ -78,6 +78,28 @@ Deno.serve(async (req) => {
   const { data: existing } = await admin.from("profiles").select("id").eq("email", email).maybeSingle();
 
   if (existing) {
+    // Existing accounts: brand owners and KBB admins can set a password when they
+    // create someone, so an account made outside V360/KBB may have a password
+    // another company knows. Never hand such an account V360/KBB access, and
+    // never let a brand or KBB pull in V360/KBB staff.
+    const { data: mems } = await admin.from("memberships").select("organizations(type)").eq("user_id", existing.id);
+    const types = (mems ?? []).flatMap((m) => {
+      const o = (m as unknown as { organizations: { type: string } | { type: string }[] | null }).organizations;
+      return (Array.isArray(o) ? o : o ? [o] : []).map((x) => x.type);
+    });
+    const hasOpsAccess = types.some((t) => t === "v360" || t === "partner");
+    if ((org.type === "v360" || org.type === "partner") && !hasOpsAccess) {
+      return json(req, {
+        error: `${email} already has an account that wasn't created by V360 or KBB. Use a different email for this person.`,
+      }, 409);
+    }
+    if (org.type === "brand" || org.type === "partner") {
+      const { data: isV360Admin } = await asUser.rpc("is_v360_admin");
+      const othersOps = types.some((t) => t === "v360" || (t === "partner" && org.type !== "partner"));
+      if (!isV360Admin && othersOps) {
+        return json(req, { error: `${email} belongs to another company and can't be added here.` }, 409);
+      }
+    }
     userId = existing.id;
   } else if (password) {
     const { data, error } = await admin.auth.admin.createUser({

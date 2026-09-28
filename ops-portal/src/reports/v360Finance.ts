@@ -28,11 +28,17 @@ const money = (header: string, key: string, width?: number): Column => ({ header
 /** 2-decimal number that is not a money amount (weights, FX rates). */
 const decimal = (header: string, key: string, width?: number): Column => ({ header, key, type: "money", width });
 
-/** Order value used by every invoice / commission calculation in the portal: COD expected, else order total. */
-const orderValue = (o: { cod_amount_expected: number | null; order_total: number }) =>
-  o.cod_amount_expected !== null && o.cod_amount_expected !== undefined && Number(o.cod_amount_expected) > 0
-    ? Number(o.cod_amount_expected)
-    : Number(o.order_total || 0);
+/** Full order value in PKR (paid online included), for commissions: orders.money_full_pkr (migration 055). */
+async function loadFullValuesPkr(ids: string[], progress: (t: string) => void): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const part of chunk(ids)) {
+    const rows = await fetchAll<{ id: string; money_full_pkr: number | null }>((from, to) =>
+      supabase.from("orders").select("id, money_full_pkr").in("id", part).order("id").range(from, to));
+    for (const r of rows) out.set(r.id, Number(r.money_full_pkr ?? 0));
+    progress(`Loading order values… ${out.size.toLocaleString()}`);
+  }
+  return out;
+}
 
 const today = () => new Date().toISOString();
 
@@ -567,8 +573,9 @@ const commissions: ReportDef = {
   async run(f, ctx) {
     const [all, pcts] = await Promise.all([loadOrders({ ...f, status: null }, ctx.progress, "delivered_at"), loadCommissionPcts()]);
     const delivered = all.filter((o) => o.status === "delivered" && o.delivered_at);
+    const fullPkr = await loadFullValuesPkr(delivered.map((o) => o.id), ctx.progress);
     const orderRows = delivered.map((o) => {
-      const value = orderValue(o);
+      const value = fullPkr.get(o.id) ?? 0;
       const kp = pcts.kbb(o.brand_id), vp = pcts.v360(o.brand_id);
       return {
         order_number: o.order_number, order_date: o.order_date, delivered_at: o.delivered_at, month: monthKey(o.delivered_at),
@@ -592,7 +599,7 @@ const commissions: ReportDef = {
       title: "Commissions",
       filters: filterLines(f),
       notes: [
-        "Delivered orders, by delivery date. Order value = COD expected, else order total (as on invoices).",
+        "Delivered orders, by delivery date. Order value = the full order value in PKR, including orders paid online (FX rate of the order date).",
         "Commission % = the brand's own setting, else the global money setting. Current rates are applied to past months.",
       ],
       figures: [

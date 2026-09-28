@@ -39,6 +39,14 @@ function userErrorText(errs: { message: string }[] | undefined): string | null {
   return errs && errs.length ? errs.map((e) => e.message).join("; ") : null;
 }
 
+// Constant-time compare for the internal service-key check.
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 function accessDenied(r: Gql): boolean {
   return JSON.stringify(r.errors ?? "").includes("ACCESS_DENIED");
 }
@@ -53,7 +61,7 @@ Deno.serve(async (req) => {
 
   // Only V360 and KBB may push fulfillments — or our own server (courier
   // webhook / courier refresh), which calls with the service role key.
-  const internal = req.headers.get("Authorization") === `Bearer ${SERVICE_KEY}`;
+  const internal = safeEqual(req.headers.get("Authorization") ?? "", `Bearer ${SERVICE_KEY}`);
   if (!internal) {
     const asUser = createClient(SUPABASE_URL, ANON_KEY, {
       global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
@@ -95,7 +103,7 @@ Deno.serve(async (req) => {
   const trackingInfo = {
     company: o.delivery_courier ?? undefined,
     number: o.delivery_tracking_number,
-    ...(o.delivery_tracking_url ? { url: o.delivery_tracking_url } : {}),
+    ...(o.delivery_tracking_url && /^https?:\/\//i.test(o.delivery_tracking_url) ? { url: o.delivery_tracking_url } : {}),
   };
 
   try {

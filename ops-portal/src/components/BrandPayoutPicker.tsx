@@ -50,11 +50,20 @@ export function BrandPayoutPicker({ onBack, onCreated }: { onBack: () => void; o
 
   const chosen = (q.data ?? []).filter((o) => sel.has(o.id));
   const pct = brandId ? pctFor(brandId) : 0;
-  const delivered = chosen.filter(isDelivered).reduce((n, o) => n + Number(o.order_value), 0);
-  const returned = chosen.filter((o) => !isDelivered(o)).reduce((n, o) => n + Number(o.order_value), 0);
-  const commission = (delivered * pct) / 100;
-  const total = delivered + returned;
-  const payable = total - commission - returned;
+  // Same rules as create_brand_payout_invoice: parcels = COD cash; V360 commission on the
+  // full value of delivered orders (paid-online included); returned orders deduct their COD.
+  const sumBy = (os: BrandPayoutCandidate[], f: (o: BrandPayoutCandidate) => number | undefined) =>
+    os.reduce((n, o) => n + Number(f(o) ?? 0), 0);
+  const del = chosen.filter(isDelivered), ret = chosen.filter((o) => !isDelivered(o));
+  const delivered = { pkr: sumBy(del, (o) => o.order_value), bdt: sumBy(del, (o) => o.order_value_bdt) };
+  const returned = { pkr: sumBy(ret, (o) => o.order_value), bdt: sumBy(ret, (o) => o.order_value_bdt) };
+  const commission = {
+    pkr: (sumBy(del, (o) => o.full_value ?? o.order_value) * pct) / 100,
+    bdt: (sumBy(del, (o) => o.full_value_bdt ?? o.order_value_bdt) * pct) / 100,
+  };
+  const total = { pkr: delivered.pkr + returned.pkr, bdt: delivered.bdt + returned.bdt };
+  const payable = { pkr: total.pkr - commission.pkr - returned.pkr, bdt: total.bdt - commission.bdt - returned.bdt };
+  const both = (a: { pkr: number; bdt: number }) => `${fmtMoney(a.pkr, "PKR")} · ${fmtMoney(a.bdt, "BDT")}`;
 
   if (q.isLoading || pcts.isLoading) return <Spinner />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -104,7 +113,9 @@ export function BrandPayoutPicker({ onBack, onCreated }: { onBack: () => void; o
                           <span className="min-w-0 flex-1 truncate text-muted">{o.customer_name ?? "—"}{o.city ? `, ${o.city}` : ""}</span>
                           <Pill group={STATUS[o.status]?.group ?? "closed"}
                             label={o.status === "returned" && o.returned_due_to_discrepancy ? RETURNED_DISCREPANCY_LABEL : STATUS[o.status]?.label ?? o.status} />
-                          <span className="w-28 text-right tabular-nums">{fmtMoney(o.order_value, "PKR")}</span>
+                          <span className="w-28 text-right tabular-nums">
+                            {o.paid_online && Number(o.order_value) <= 0 ? <span className="text-muted">Paid online</span> : fmtMoney(o.order_value, "PKR")}
+                          </span>
                         </label>
                       </li>
                     ))}
@@ -118,10 +129,10 @@ export function BrandPayoutPicker({ onBack, onCreated }: { onBack: () => void; o
 
       {chosen.length > 0 && (
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 rounded border border-line bg-sunken/40 px-3 py-2 text-[13px]">
-          <dt className="text-muted">Total parcels amount</dt><dd className="text-right tabular-nums">{fmtMoney(total, "PKR")}</dd>
-          <dt className="text-muted">− V360 commission ({pct}% on delivered)</dt><dd className="text-right tabular-nums">−{fmtMoney(commission, "PKR")}</dd>
-          <dt className="text-muted">− Total return orders</dt><dd className="text-right tabular-nums">−{fmtMoney(returned, "PKR")}</dd>
-          <dt className="font-semibold">Payable to brand</dt><dd className="text-right font-semibold tabular-nums">{fmtMoney(payable, "PKR")}</dd>
+          <dt className="text-muted">Total parcels amount (COD)</dt><dd className="text-right tabular-nums">{both(total)}</dd>
+          <dt className="text-muted">− V360 commission ({pct}% on delivered, full value)</dt><dd className="text-right tabular-nums">−{both(commission)}</dd>
+          <dt className="text-muted">− Total return orders</dt><dd className="text-right tabular-nums">−{both(returned)}</dd>
+          <dt className="font-semibold">{payable.pkr < 0 ? "Owed by brand" : "Payable to brand"}</dt><dd className="text-right font-semibold tabular-nums">{both(payable)}</dd>
         </dl>
       )}
       {create.error && <p className="text-[13px] text-g-problem">{describeError(create.error)}</p>}

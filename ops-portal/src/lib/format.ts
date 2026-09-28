@@ -38,3 +38,14 @@ export function plural(n: number, one: string, many = `${one}s`) {
 }
 
 export const todayISO = () => new Date().toISOString().slice(0, 10);
+
+/** Link target for a stored URL: http(s) only, so a saved "javascript:" link can't run. */
+export function safeHref(url: string | null | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
+}

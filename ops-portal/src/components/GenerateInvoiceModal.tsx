@@ -184,7 +184,8 @@ export function GenerateInvoiceModal({
   const selectedOrdersValueSum = useMemo(() => {
     return allOrders
       .filter((o) => selectedOrderIds.has(o.id))
-      .reduce((acc, o) => acc + (o.cod_amount_expected || o.order_total || 0), 0);
+      // COD to collect, in the customer currency (BDT). Paid-online orders add 0.
+      .reduce((acc, o) => acc + Number(o.cod_amount_expected ?? o.order_total ?? 0), 0);
   }, [allOrders, selectedOrderIds]);
 
   return (
@@ -395,7 +396,7 @@ export function GenerateInvoiceModal({
                         <td className="text-center">
                           {s.order_count} <span className="text-muted">({s.brand_count} b)</span>
                         </td>
-                        <td className="text-right font-medium">{fmtMoney(s.cod_expected, "PKR")}</td>
+                        <td className="text-right font-medium">{fmtMoney(s.cod_expected, "BDT")}</td>
                         <td>
                           <Pill {...SHIPMENT_STATUS[s.status as ShipmentStatusType]} />
                         </td>
@@ -413,7 +414,7 @@ export function GenerateInvoiceModal({
               Selected: <strong className="text-primary">{selectedShipmentIds.size} Shipment(s)</strong>
               {selectedShipmentIds.size > 0 && (
                 <span className="ml-2 text-muted">
-                  ({selectedShipmentsOrdersSum} Orders · Total {fmtMoney(selectedShipmentsValueSum, "PKR")})
+                  ({selectedShipmentsOrdersSum} Orders · COD {fmtMoney(selectedShipmentsValueSum, "BDT")})
                 </span>
               )}
             </div>
@@ -623,14 +624,14 @@ export function GenerateInvoiceModal({
                     <th>Brand</th>
                     <th>Customer</th>
                     <th>Date</th>
-                    <th className="text-right">COD / Value (PKR)</th>
+                    <th className="text-right">COD to collect</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody className="table-body divide-y divide-line">
                   {allOrders.map((o) => {
                     const isSelected = selectedOrderIds.has(o.id);
-                    const val = o.cod_amount_expected || o.order_total || 0;
+                    const val = Number(o.cod_amount_expected ?? o.order_total ?? 0);
                     return (
                       <tr
                         key={o.id}
@@ -653,7 +654,7 @@ export function GenerateInvoiceModal({
                           {o.customer_name || "—"} ({o.city || "N/A"})
                         </td>
                         <td className="text-muted">{fmtDate(o.order_date)}</td>
-                        <td className="text-right font-medium">{fmtMoney(val, "PKR")}</td>
+                        <td className="text-right font-medium">{val > 0 ? fmtMoney(val, o.cod_currency ?? "BDT") : <span className="text-muted">Paid online</span>}</td>
                         <td>
                           <span className="inline-flex rounded-full bg-surface-hover px-2 py-0.5 text-[10px] font-medium text-ink">
                             {STATUS[o.status as OrderStatus]?.label || o.status}
@@ -673,7 +674,7 @@ export function GenerateInvoiceModal({
               Selected: <strong className="text-primary">{selectedOrderIds.size} Order(s)</strong>
               {selectedOrderIds.size > 0 && (
                 <span className="ml-2 text-muted">
-                  (Total {fmtMoney(selectedOrdersValueSum, "PKR")})
+                  (COD {fmtMoney(selectedOrdersValueSum, "BDT")})
                 </span>
               )}
             </div>

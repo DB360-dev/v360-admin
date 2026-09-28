@@ -51,8 +51,15 @@ Deno.serve(async (req) => {
     console.error("get_shopify_webhook_secret failed", secretErr);
     return new Response("Temporary error", { status: 500 });
   }
-  const { apiSecret: sharedSecret } = await getShopifyCreds();
-  const secrets = [storeSecret as string | null, sharedSecret].filter((s): s is string => !!s);
+  // A store on its own app is verified with its own secret only; the shared
+  // app's secret is accepted just for stores that don't have one.
+  const secrets: string[] = [];
+  if (storeSecret) {
+    secrets.push(storeSecret as string);
+  } else {
+    const { apiSecret: sharedSecret } = await getShopifyCreds();
+    if (sharedSecret) secrets.push(sharedSecret);
+  }
   let verified = false;
   for (const secret of secrets) {
     if (hmac && safeEqual(await hmacBase64(secret, raw), hmac)) { verified = true; break; }

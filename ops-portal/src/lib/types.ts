@@ -1,3 +1,4 @@
+import type { OrderMoneyColumns } from "@/lib/money";
 export type OrderStatus =
   | "new" | "confirmation_pending" | "customer_unreachable" | "needs_amendment" | "brand_confirmed" | "confirmed" | "cancelled"
   | "brand_preparing" | "dispatched_to_hub" | "received_at_hub" | "hub_issue" | "ready_for_shipment"
@@ -128,16 +129,25 @@ export interface BrandPayoutLine {
   /** Stored from migration 040 on. */
   order_date?: string; customer_name?: string | null; city?: string | null;
   items?: { product_name: string; variant: string | null; sku: string | null; quantity: number; unit_price: number; discount: number }[];
+  /** From migration 055 on: value = COD cash (PKR), full_value = whole order (commission base), BDT twins. */
+  paid_online?: boolean;
+  value_bdt?: number; full_value?: number; full_value_bdt?: number;
+  commission_bdt?: number; returned_deduction_bdt?: number; payable_bdt?: number;
 }
 export interface BrandPayoutLines {
   v360_commission_pct: number; delivered_value: number; returned_value: number; orders: BrandPayoutLine[];
+  /** From migration 055 on: invoice totals in BDT (stored columns stay PKR). */
+  bdt?: { total_value: number; delivered_value: number; returned_value: number; commission: number; payable: number };
 }
 
 /** An order V360 can pay the brand for (KBB-settled, delivered or returned, not paid out yet). */
 export interface BrandPayoutCandidate {
   id: string; brand_id: string; brand_name: string; order_number: string; order_date: string; status: OrderStatus;
   returned_due_to_discrepancy: boolean; customer_name: string | null; city: string | null;
+  /** COD cash in PKR (0 when paid online). */
   order_value: number; delivered_at: string | null; settled_at: string | null;
+  /** From migration 055: BDT twin, full order value (commission base), paid online flag. */
+  order_value_bdt?: number; full_value?: number; full_value_bdt?: number; paid_online?: boolean;
 }
 
 export interface OrderOverview {
@@ -163,7 +173,8 @@ export interface ShopifyConnection {
   last_synced_at: string | null; installed_at: string | null;
 }
 
-export interface OpsOrderDetail extends OrderDetail { brand: { name: string } | null }
+/** money_* columns: per-order COD / full value in PKR and BDT (see lib/money.ts). */
+export interface OpsOrderDetail extends OrderDetail, OrderMoneyColumns { brand: { name: string } | null }
 
 export interface InboundBatchAdmin extends InboundBatchOverview { brand_name: string }
 
