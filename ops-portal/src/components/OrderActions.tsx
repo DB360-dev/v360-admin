@@ -9,6 +9,11 @@ import {
 } from "@/hooks/useData";
 import { Button } from "./ui/Button";
 import { ActionDialog } from "./ActionDialog";
+import { CourierBookDialog, printSlips } from "./CourierBookDialog";
+import { COURIER_LABEL, courierCall, useCourierAccount, useCourierParcels } from "@/hooks/useCourier";
+import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
+import { ROOT, type QueueOrder } from "@/hooks/useData";
 import { DeliveredDialog, EditCustomerDialog, ReceiveDialog, ReturnDialog, TrackingDialog } from "./OrderDialogs";
 
 /** Button wording for each target status. */
@@ -58,8 +63,25 @@ function hasVisible(children: ReactNode): boolean {
 }
 
 export function OrderActions({ order, items, compact }: { order: Order; items?: OrderItem[]; compact?: boolean }) {
-  const { can } = useOps();
+  const { can, isKbb } = useOps();
   const [dlg, setDlg] = useState<Dlg | null>(null);
+  // Courier (KBB): only on the full order page, not on every queue card.
+  const courier = useCourierAccount();
+  const parcel = useCourierParcels(compact || !isKbb ? [] : [order.id]).data?.get(order.id);
+  const [booking, setBooking] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const qc = useQueryClient();
+  const refreshCourier = async () => {
+    if (!parcel) return;
+    setRefreshing(true);
+    try {
+      const r = await courierCall({ action: "refresh", tracking_ids: [parcel.tracking_id] });
+      const x = r.results?.[0];
+      if (x?.error) toast.error(x.error); else toast.success(`${COURIER_LABEL}: ${x?.status ?? "no change"}`);
+      await qc.invalidateQueries({ queryKey: ROOT });
+    } catch (e) { toast.error(describeError(e)); } finally { setRefreshing(false); }
+  };
+  const canCourier = !compact && isKbb && can("deliveries.manage");
   const close = () => setDlg(null);
   const s = order.status;
   const moves = useAvailableTransitions(s);
@@ -112,6 +134,10 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
     !compact && can("orders.edit_customer") && EDITABLE.includes(s) && <Button key="edit" size={size} onClick={() => open({ kind: "edit" })}>Edit customer</Button>,
     can("orders.hold") && (lastMile || !compact) && s !== "hold" && !TERMINAL.includes(s) && <Button key="hold" size={size} variant="ghost" onClick={() => open({ kind: "hold" })}>Hold</Button>,
     lastMile && moves.includes("returned") && <Button key="return-mark" size={size} variant="ghost" onClick={() => open({ kind: "status", to: "returned" })}>Return</Button>,
+    canCourier && !parcel && courier.data?.is_enabled && (s === "received_by_partner" || s === "preparing_for_delivery") && orderItems &&
+      <Button key="courier-book" size={size} variant="primary" onClick={() => setBooking(true)}>Book with {COURIER_LABEL}</Button>,
+    canCourier && parcel && <Button key="courier-slip" size={size} onClick={() => printSlips([order.id])}>Print COD slip</Button>,
+    canCourier && parcel && <Button key="courier-refresh" size={size} variant="ghost" loading={refreshing} onClick={() => void refreshCourier()}>Refresh {COURIER_LABEL} status</Button>,
     !compact && can("orders.override_status") && <Button key="override" size={size} variant="ghost" onClick={() => open({ kind: "override" })}>Override</Button>,
   ];
 
@@ -120,6 +146,7 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
 
   return (
     <>
+      {booking && <CourierBookDialog orders={[{ ...(order as QueueOrder), order_items: orderItems ?? [] }]} onClose={() => setBooking(false)} />}
       {compact ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="flex flex-wrap items-center gap-1.5">

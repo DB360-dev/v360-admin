@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { Checkbox } from "./ui/Checkbox";
 import { useOps } from "@/context/OpsContext";
 import type { QueueOrder } from "@/hooks/useData";
 import { fmtMoney, fmtShort, since, daysSince } from "@/lib/format";
@@ -8,13 +9,18 @@ import { OrderActions } from "./OrderActions";
 import { ContactLinks } from "@/pages/OrderDetail";
 
 /** One order in a work queue: everything needed to act without opening it. */
-export function QueueCard({ o, showItems = true, showDateAndMaster = false }: { o: QueueOrder; showItems?: boolean; showDateAndMaster?: boolean }) {
+export function QueueCard({ o, showItems = true, showDateAndMaster = false, selected, onSelect }: {
+  o: QueueOrder; showItems?: boolean; showDateAndMaster?: boolean;
+  /** When set, the card shows a checkbox (e.g. to book several orders with a courier). */
+  selected?: boolean; onSelect?: (on: boolean) => void;
+}) {
   const showMoney = useOps().can("orders.view_money");
   const waited = daysSince(o.status_changed_at);
   const items = o.order_items.reduce((n, i) => n + i.quantity, 0);
   return (
     <li className="panel">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2.5">
+        {onSelect && <Checkbox checked={!!selected} onChange={(e) => onSelect(e.target.checked)} aria-label={`Select ${o.order_number}`} />}
         <Link to={`/orders/${o.id}`} className="font-semibold hover:underline">{o.order_number}</Link>
         <span className="text-[13px] text-muted">{o.brand?.name}</span>
         {showDateAndMaster && <span className="text-[13px] text-muted" title="Order date">{fmtShort(o.order_date)}</span>}

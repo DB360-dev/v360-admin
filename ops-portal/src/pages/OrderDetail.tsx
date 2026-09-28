@@ -5,6 +5,7 @@ import { ArrowLeft, MessageCircle, MessageSquare, Phone } from "lucide-react";
 import { useShopifyFulfill, useBrandMoneySettings, useInvoicesList, useMoneySettings, useOrder, useOrderEvents, useOrderInternalNote, useOrderMessages, useSaveOrderInternalNote, useShipments } from "@/hooks/useData";
 import { INBOUND_STATUS, PARTNER_STATUS_TRACK, RETURN_DISPOSITION, SHIPMENT_STATUS, STATUS, V360_STATUS_TRACK } from "@/lib/status";
 import { useOps } from "@/context/OpsContext";
+import { useCourierParcels } from "@/hooks/useCourier";
 import { fmtDate, fmtDateTime, fmtMoney } from "@/lib/format";
 import type { InvoicePaymentStatus, OrderNoteRole, OpsOrderDetail } from "@/lib/types";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
@@ -204,6 +205,7 @@ export function OrderDetail() {
   const msgs = useOrderMessages(id);
   const { isV360, isKbb, can } = useOps();
   const hideMoney = !can("orders.view_money");
+  const parcel = useCourierParcels(id ? [id] : []).data?.get(id);
   const [tab, setTab] = useState<"messages" | "timeline">("messages");
 
   if (q.isLoading) return <Spinner label="Loading order" />;
@@ -321,6 +323,8 @@ export function OrderDetail() {
             </Section>
             <Section title="Delivery (KBB)">
               <Facts rows={[
+                ...(parcel ? [["Courier status", <span key="cs">{parcel.courier_status}{parcel.status_at ? ` · ${fmtDateTime(parcel.status_at)}` : ""}{parcel.paid_at ? " · COD paid out" : ""}</span>] as [string, ReactNode],
+                  ["Courier area", parcel.delivery_area_name] as [string, ReactNode]] : []),
                 ["Courier", o.delivery_courier], ["Tracking", o.delivery_tracking_number],
                 ...(o.delivery_tracking_url ? [["Tracking link", <a key="tl" href={o.delivery_tracking_url} target="_blank" rel="noreferrer" className="link break-all">{o.delivery_tracking_url}</a>] as [string, ReactNode]] : []),
                 ...((o.shopify_fulfillment_id || o.shopify_fulfillment_error || ["out_for_delivery", "delivered", "delivery_failed"].includes(o.status))

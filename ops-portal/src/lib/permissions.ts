@@ -17,6 +17,7 @@ export type Perm =
   | "fx.view" | "fx.manage"
   | "webhooks.view" | "webhooks.replay"
   | "activity.view"
+  | "couriers.manage"
   | ReportPerm;
 
 /** One permission per report (migration 052). */
@@ -59,7 +60,7 @@ const V360_ONLY = new Set<Perm>([
 ]);
 
 /** Permissions that only exist for KBB staff (applies_to = {partner}). */
-const KBB_ONLY = new Set<Perm>(["shipments.receive", "reports.incoming_shipments", "reports.agent_productivity", "reports.delivery_sheet"]);
+const KBB_ONLY = new Set<Perm>(["shipments.receive", "couriers.manage", "reports.incoming_shipments", "reports.agent_productivity", "reports.delivery_sheet"]);
 
 /** Whether a permission exists for this side at all. Built-in admins get every permission of their own side only. */
 export function permAppliesTo(perm: Perm, side: "v360" | "kbb"): boolean {

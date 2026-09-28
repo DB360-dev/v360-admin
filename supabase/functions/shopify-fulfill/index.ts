@@ -51,17 +51,21 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json(req, { error: "Invalid request" }, 400); }
   if (!body.order_id) return json(req, { error: "Order is required" }, 400);
 
-  // Only V360 and KBB may push fulfillments.
-  const asUser = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
-  });
-  const { data: userData } = await asUser.auth.getUser();
-  if (!userData?.user) return json(req, { error: "Your session has expired. Please sign in again." }, 401);
-  const [{ data: canV360 }, { data: canPartner }] = await Promise.all([
-    asUser.rpc("v360_can", { p_perm: "deliveries.manage" }),
-    asUser.rpc("partner_can", { p_perm: "deliveries.manage" }),
-  ]);
-  if (!canV360 && !canPartner) return json(req, { error: "Your role doesn't allow updating deliveries" }, 403);
+  // Only V360 and KBB may push fulfillments — or our own server (courier
+  // webhook / courier refresh), which calls with the service role key.
+  const internal = req.headers.get("Authorization") === `Bearer ${SERVICE_KEY}`;
+  if (!internal) {
+    const asUser = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
+    });
+    const { data: userData } = await asUser.auth.getUser();
+    if (!userData?.user) return json(req, { error: "Your session has expired. Please sign in again." }, 401);
+    const [{ data: canV360 }, { data: canPartner }] = await Promise.all([
+      asUser.rpc("v360_can", { p_perm: "deliveries.manage" }),
+      asUser.rpc("partner_can", { p_perm: "deliveries.manage" }),
+    ]);
+    if (!canV360 && !canPartner) return json(req, { error: "Your role doesn't allow updating deliveries" }, 403);
+  }
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY);
   const { data: o, error: oErr } = await admin.from("orders")

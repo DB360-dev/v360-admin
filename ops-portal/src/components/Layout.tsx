@@ -35,6 +35,7 @@ const NAV: NavItem[] = [
   { to: "/money", label: "My account", icon: Banknote, sides: ["kbb"], perm: "money.view", section: "Finance" },
   { to: "/reports", label: "Reports", icon: FileSpreadsheet, reports: true, section: "Finance" },
   { to: "/brands", label: "Brands", icon: Building2, perm: "brands.view", section: "Admin" },
+  { to: "/couriers", label: "Courier settings", icon: Truck, sides: ["kbb"], perm: "couriers.manage", section: "Admin" },
   { to: "/team", label: "Team & access", icon: Users, managers: true, section: "Admin" },
   { to: "/roles", label: "Roles & permissions", icon: ShieldCheck, managers: true, section: "Admin" },
   { to: "/fx", label: "FX rates", icon: Coins, perm: "fx.view", section: "Admin" },
