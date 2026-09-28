@@ -6,7 +6,8 @@ import { useShopifyFulfill, useBrandMoneySettings, useInvoicesList, useMoneySett
 import { INBOUND_STATUS, PARTNER_STATUS_TRACK, RETURN_DISPOSITION, SHIPMENT_STATUS, STATUS, V360_STATUS_TRACK } from "@/lib/status";
 import { useOps } from "@/context/OpsContext";
 import { useCourierParcels } from "@/hooks/useCourier";
-import { fmtDate, fmtDateTime, fmtMoney } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtMoney, safeHref } from "@/lib/format";
+import { ZERO, orderMoney, scaleAmt, subAmt, type Amt } from "@/lib/money";
 import type { InvoicePaymentStatus, OrderNoteRole, OpsOrderDetail } from "@/lib/types";
 import { Pill, StatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
@@ -86,15 +87,16 @@ function MoneyDetail({ order }: { order: OpsOrderDetail }) {
     ? { invoice_number: `INV-DISP-${shipment.code}`, payment_status: shipment.invoice_payment_status || "not_paid" }
     : null;
   const settleInv = savedSettle ?? null;
-  const cur = order.cod_currency ?? "BDT";
-
-  const value = order.cod_amount_expected && order.cod_amount_expected > 0 ? order.cod_amount_expected : order.order_total ?? 0;
-  const advance = value * 0.5;
-  const kbbCommission = (value * kbbPct) / 100;
-  const v360Commission = (value * v360Pct) / 100;
+  // Cash (advance, clawback) uses the COD only: 0 when paid online. Commissions use the full value.
+  const m = orderMoney(order);
+  const value = m.cod;
+  const advance = scaleAmt(value, 0.5);
+  const kbbCommission = scaleAmt(m.full, kbbPct / 100);
+  const v360Commission = scaleAmt(m.full, v360Pct / 100);
   const isReturned = ["returned", "delivery_failed", "hub_issue", "cancelled"].includes(order.status);
-  const clawback = isReturned ? advance : 0;
-  const settlement = value - advance - kbbCommission - clawback;
+  const clawback = isReturned ? advance : ZERO;
+  const settlement = subAmt(subAmt(subAmt(value, advance), kbbCommission), clawback);
+  const both = (a: Amt) => `${fmtMoney(a.pkr, "PKR")} · ${fmtMoney(a.bdt, "BDT")}`;
 
   if (invQ.isLoading || shipmentsQ.isLoading) return <p className="py-2 text-[13px] text-faint">Loading invoices…</p>;
 
@@ -109,7 +111,7 @@ function MoneyDetail({ order }: { order: OpsOrderDetail }) {
       {advanceInv && (
         <div className="flex items-center justify-between gap-3 pl-4 text-[13px]">
           <span className="text-muted">50% advance</span>
-          <span className="whitespace-nowrap font-medium">{fmtMoney(advance, cur)}</span>
+          <span className="whitespace-nowrap font-medium">{both(advance)}</span>
         </div>
       )}
       <div className="flex items-center justify-between gap-3 border-t border-line pt-2">
@@ -120,18 +122,18 @@ function MoneyDetail({ order }: { order: OpsOrderDetail }) {
       </div>
       {settleInv && (
         <div className="space-y-1 pl-4 text-[13px]">
-          <div className="flex items-center justify-between gap-3"><span className="text-muted">Order value</span><span className="whitespace-nowrap">{fmtMoney(value, cur)}</span></div>
-          <div className="flex items-center justify-between gap-3"><span className="text-muted">− 50% already paid</span><span className="whitespace-nowrap">−{fmtMoney(advance, cur)}</span></div>
-          <div className="flex items-center justify-between gap-3"><span className="text-muted">− KBB commission ({kbbPct}%)</span><span className="whitespace-nowrap">−{fmtMoney(kbbCommission, cur)}</span></div>
+          <div className="flex items-center justify-between gap-3"><span className="text-muted">COD collected{m.paidOnline ? (value.pkr > 0 ? " (part paid online)" : " (paid online)") : ""}</span><span className="whitespace-nowrap">{both(value)}</span></div>
+          <div className="flex items-center justify-between gap-3"><span className="text-muted">− 50% already paid</span><span className="whitespace-nowrap">−{both(advance)}</span></div>
+          <div className="flex items-center justify-between gap-3"><span className="text-muted">− KBB commission ({kbbPct}%)</span><span className="whitespace-nowrap">−{both(kbbCommission)}</span></div>
           {isReturned && (
-            <div className="flex items-center justify-between gap-3"><span className="text-muted">− 50% advance (returned, clawback)</span><span className="whitespace-nowrap">−{fmtMoney(clawback, cur)}</span></div>
+            <div className="flex items-center justify-between gap-3"><span className="text-muted">− 50% advance (returned, clawback)</span><span className="whitespace-nowrap">−{both(clawback)}</span></div>
           )}
-          <div className="flex items-center justify-between gap-3 pt-1 font-semibold"><span>Settlement payable</span><span className="whitespace-nowrap">{fmtMoney(settlement, cur)}</span></div>
+          <div className="flex items-center justify-between gap-3 pt-1 font-semibold"><span>Settlement payable</span><span className="whitespace-nowrap">{both(settlement)}</span></div>
         </div>
       )}
       <div className="space-y-1 border-t border-line pt-2 text-[13px]">
-        <div className="flex items-center justify-between gap-3"><span className="text-muted">KBB's commission ({kbbPct}%)</span><span className="whitespace-nowrap">{fmtMoney(kbbCommission, cur)}</span></div>
-        <div className="flex items-center justify-between gap-3"><span className="text-muted">V360's commission ({v360Pct}%)</span><span className="whitespace-nowrap">{fmtMoney(v360Commission, cur)}</span></div>
+        <div className="flex items-center justify-between gap-3"><span className="text-muted">KBB's commission ({kbbPct}%)</span><span className="whitespace-nowrap">{both(kbbCommission)}</span></div>
+        <div className="flex items-center justify-between gap-3"><span className="text-muted">V360's commission ({v360Pct}%)</span><span className="whitespace-nowrap">{both(v360Commission)}</span></div>
       </div>
     </div>
   );
@@ -326,7 +328,7 @@ export function OrderDetail() {
                 ...(parcel ? [["Courier status", <span key="cs">{parcel.courier_status}{parcel.status_at ? ` · ${fmtDateTime(parcel.status_at)}` : ""}{parcel.paid_at ? " · COD paid out" : ""}</span>] as [string, ReactNode],
                   ["Courier area", parcel.delivery_area_name] as [string, ReactNode]] : []),
                 ["Courier", o.delivery_courier], ["Tracking", o.delivery_tracking_number],
-                ...(o.delivery_tracking_url ? [["Tracking link", <a key="tl" href={o.delivery_tracking_url} target="_blank" rel="noreferrer" className="link break-all">{o.delivery_tracking_url}</a>] as [string, ReactNode]] : []),
+                ...(o.delivery_tracking_url ? [["Tracking link", <a key="tl" href={safeHref(o.delivery_tracking_url)} target="_blank" rel="noreferrer" className="link break-all">{o.delivery_tracking_url}</a>] as [string, ReactNode]] : []),
                 ...((o.shopify_fulfillment_id || o.shopify_fulfillment_error || ["out_for_delivery", "delivered", "delivery_failed"].includes(o.status))
                   ? [["Shopify", <ShopifyFulfillment key="sf" order={o} canRetry={isV360 || isKbb} />] as [string, ReactNode]] : []),
                 ...(!hideMoney && (o.shopify_payment_synced || o.shopify_payment_error) ? [["Shopify payment tag", o.shopify_payment_error

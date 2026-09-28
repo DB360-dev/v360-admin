@@ -26,6 +26,10 @@ export function BrandPayoutInvoiceDialog({ invoice, onClose }: { invoice: Invoic
   const pct = l?.v360_commission_pct ?? 0;
   const commission = invoice.net_remaining;      // stored: V360 commission on delivered orders
   const returnedAmount = invoice.advance_amount; // stored: returned orders' amount deducted
+  // Invoices from migration 055 on also carry BDT; older ones show as they were saved.
+  const bdt = l?.bdt ?? null;
+  const owed = invoice.payable_amount < 0;
+  const bdtCell = (v: number | undefined) => bdt ? <td className="border border-slate-300 px-3 py-2 text-right text-slate-600">{v === undefined ? "" : num(v)}</td> : null;
 
   return (
     <Dialog open onClose={onClose} width="lg" title={`Brand invoice ${invoice.invoice_number}`}
@@ -76,16 +80,22 @@ export function BrandPayoutInvoiceDialog({ invoice, onClose }: { invoice: Invoic
         </div>
 
         {mode === "summary" ? (
-          <table className="w-full max-w-md border-collapse border border-slate-300 text-sm">
+          <table className="w-full max-w-lg border-collapse border border-slate-300 text-sm">
+            {bdt && (
+              <thead><tr className="bg-slate-50 text-xs font-bold text-slate-700">
+                <th className="border border-slate-300 px-3 py-1.5 text-left" /><th className="border border-slate-300 px-3 py-1.5 text-right">PKR</th>
+                <th className="border border-slate-300 px-3 py-1.5 text-right">BDT</th></tr></thead>
+            )}
             <tbody>
-              <tr><td className="border border-slate-300 px-3 py-2">Total parcels amount ({orders.length})</td>
-                <td className="border border-slate-300 px-3 py-2 text-right">{num(invoice.total_value)}</td></tr>
-              <tr><td className="border border-slate-300 px-3 py-2">V360 commission ({pct}% on delivered)</td>
-                <td className="border border-slate-300 px-3 py-2 text-right">−{num(commission)}</td></tr>
+              <tr><td className="border border-slate-300 px-3 py-2">Total parcels amount ({orders.length}){bdt ? ": COD collected" : ""}</td>
+                <td className="border border-slate-300 px-3 py-2 text-right">{num(invoice.total_value)}</td>{bdtCell(bdt?.total_value)}</tr>
+              <tr><td className="border border-slate-300 px-3 py-2">V360 commission ({pct}% on delivered{bdt ? ", full order value" : ""})</td>
+                <td className="border border-slate-300 px-3 py-2 text-right">−{num(commission)}</td>{bdtCell(bdt ? -bdt.commission : undefined)}</tr>
               <tr><td className="border border-slate-300 px-3 py-2">Total return orders ({returned.length})</td>
-                <td className="border border-slate-300 px-3 py-2 text-right">−{num(returnedAmount)}</td></tr>
-              <tr className="bg-slate-100 font-bold"><td className="border border-slate-300 px-3 py-2">Total payable to brand</td>
-                <td className="border border-slate-300 px-3 py-2 text-right">{num(invoice.payable_amount)} PKR</td></tr>
+                <td className="border border-slate-300 px-3 py-2 text-right">−{num(returnedAmount)}</td>{bdtCell(bdt ? -bdt.returned_value : undefined)}</tr>
+              <tr className="bg-slate-100 font-bold"><td className="border border-slate-300 px-3 py-2">{owed ? "Total owed by brand" : "Total payable to brand"}</td>
+                <td className="border border-slate-300 px-3 py-2 text-right">{num(invoice.payable_amount)} PKR</td>
+                {bdt && <td className="border border-slate-300 px-3 py-2 text-right">{num(bdt.payable)} BDT</td>}</tr>
             </tbody>
           </table>
         ) : (
@@ -115,20 +125,32 @@ export function BrandPayoutInvoiceDialog({ invoice, onClose }: { invoice: Invoic
                     <td className="border border-slate-300 px-2.5 py-1.5">
                       {o.status === "returned" && o.returned_due_to_discrepancy ? RETURNED_DISCREPANCY_LABEL : STATUS[o.status]?.label ?? o.status}
                     </td>
-                    <td className="border border-slate-300 px-2.5 py-1.5 text-right">{num(o.value)}</td>
-                    <td className="border border-slate-300 px-2.5 py-1.5 text-right">{num(o.commission)}</td>
+                    <td className="border border-slate-300 px-2.5 py-1.5 text-right">
+                      {num(o.value)}{o.value_bdt !== undefined && <div className="text-slate-500">{num(o.value_bdt)} BDT</div>}
+                      {o.paid_online && <div className="text-[10px] text-slate-500">{o.value > 0 ? "Part paid online" : "Paid online"}</div>}
+                    </td>
+                    <td className="border border-slate-300 px-2.5 py-1.5 text-right">
+                      {num(o.commission)}{o.commission_bdt !== undefined && <div className="text-slate-500">{num(o.commission_bdt)} BDT</div>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr className="bg-slate-100 font-bold">
                   <td colSpan={3} className="border border-slate-300 px-2.5 py-2 text-right">Total COD amount</td>
-                  <td className="border border-slate-300 px-2.5 py-2 text-right">{num(invoice.total_value)}</td>
-                  <td className="border border-slate-300 px-2.5 py-2 text-right">{num(commission)}</td>
+                  <td className="border border-slate-300 px-2.5 py-2 text-right">
+                    {num(invoice.total_value)}{bdt && <div className="font-normal text-slate-500">{num(bdt.total_value)} BDT</div>}
+                  </td>
+                  <td className="border border-slate-300 px-2.5 py-2 text-right">
+                    {num(commission)}{bdt && <div className="font-normal text-slate-500">{num(bdt.commission)} BDT</div>}
+                  </td>
                 </tr>
               </tfoot>
             </table>
-            <p className="mt-2 text-[11px] text-slate-500">V360 commission is {pct}% on delivered orders; returned orders carry no commission.</p>
+            <p className="mt-2 text-[11px] text-slate-500">
+              V360 commission is {pct}% on delivered orders; returned orders carry no commission.
+              {bdt && " Amounts are PKR with BDT underneath. Paid-online orders: the brand already has the money, so only the commission is charged."}
+            </p>
           </div>
         )}
       </div>

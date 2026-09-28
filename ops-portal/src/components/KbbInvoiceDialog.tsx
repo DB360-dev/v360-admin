@@ -7,6 +7,7 @@ import { fmtDate } from "@/lib/format";
 import { SHIPMENT_STATUS, STATUS } from "@/lib/status";
 import type { Order, OrderItem, OrderStatus, ShipmentOverview } from "@/lib/types";
 import { bdQty } from "@/lib/items";
+import { MONEY_COLUMNS, ZERO, addAmt, orderMoney, scaleAmt, subAmt, sumAmt, type Amt, type OrderMoneyColumns } from "@/lib/money";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { Spinner } from "@/components/ui/States";
@@ -37,6 +38,17 @@ function selectionKey(ids: string[]): string {
 
 function fmtNum(val: number): string {
   return Math.round(val).toLocaleString("en-US");
+}
+
+/** An amount in PKR with its BDT value underneath. */
+function AmtCell({ v, neg }: { v: Amt; neg?: boolean }) {
+  const sign = neg ? "\u2212" : "";
+  return (
+    <>
+      <span className="block">{sign}{fmtNum(v.pkr)} <span className="text-[10px] font-normal text-slate-500">PKR</span></span>
+      <span className="block text-[10.5px] font-normal text-slate-500">{sign}{fmtNum(v.bdt)} BDT</span>
+    </>
+  );
 }
 
 export function KbbInvoiceDialog({
@@ -78,7 +90,7 @@ export function KbbInvoiceDialog({
     queryFn: async () => {
       let q = supabase
         .from("orders")
-        .select("*, brand:organizations(name), order_items(*)");
+        .select(`*, ${MONEY_COLUMNS}, brand:organizations(name), order_items(*)`);
 
       if (shipmentIds.length > 0) {
         q = q.in("shipment_id", shipmentIds);
@@ -90,7 +102,7 @@ export function KbbInvoiceDialog({
 
       const { data, error } = await q.order("order_number");
       if (error) throw error;
-      return (data ?? []) as (Order & { brand: { name: string } | null; order_items: OrderItem[] })[];
+      return (data ?? []) as unknown as (Order & OrderMoneyColumns & { brand: { name: string } | null; order_items: OrderItem[] })[];
     },
   });
 
@@ -113,7 +125,7 @@ export function KbbInvoiceDialog({
     const map = new Map<string, {
       brandId: string;
       brandName: string;
-      orders: (Order & { brand: { name: string } | null; order_items: OrderItem[] })[];
+      orders: (Order & OrderMoneyColumns & { brand: { name: string } | null; order_items: OrderItem[] })[];
     }>();
 
     for (const o of shipmentFullOrdersQuery.data ?? []) {
@@ -140,41 +152,37 @@ export function KbbInvoiceDialog({
   const fullOrdersList = shipmentFullOrdersQuery.data ?? [];
 
   // ===================== DISPATCH ADVANCE BREAKDOWN CALCULATIONS =====================
-  const dispatchBrandSummaryMap = new Map<string, { brandId: string; brandName: string; orderCount: number; orderValue: number }>();
+  // Cash amounts (advance, remaining, clawback) use each order's COD: 0 when paid
+  // online, the unpaid part when partly paid. Commission uses the full order value.
+  // KBB's commission on prepaid orders is paid by V360 (it lowers what KBB pays).
+  // Every amount is in PKR and BDT (FX rate of the order date, as on the Money page).
+  type BrandSums = { brandId: string; brandName: string; orderCount: number; prepaidCount: number; full: Amt; cod: Amt };
+  const dispatchBrandSummaryMap = new Map<string, BrandSums>();
   for (const o of fullOrdersList) {
-    const val = o.cod_amount_expected !== null && o.cod_amount_expected !== undefined && o.cod_amount_expected > 0
-      ? Number(o.cod_amount_expected)
-      : Number(o.order_total || 0);
-
+    const m = orderMoney(o);
     const bId = o.brand_id;
-    const bName = o.brand?.name || "Unknown Brand";
-
-    const existing = dispatchBrandSummaryMap.get(bId);
-    if (existing) {
-      existing.orderValue += val;
-      existing.orderCount += 1;
-    } else {
-      dispatchBrandSummaryMap.set(bId, {
-        brandId: bId,
-        brandName: bName,
-        orderCount: 1,
-        orderValue: val,
-      });
-    }
+    const existing = dispatchBrandSummaryMap.get(bId)
+      ?? { brandId: bId, brandName: o.brand?.name || "Unknown Brand", orderCount: 0, prepaidCount: 0, full: ZERO, cod: ZERO };
+    existing.orderCount += 1;
+    if (m.paidOnline) existing.prepaidCount += 1;
+    existing.full = addAmt(existing.full, m.full);
+    existing.cod = addAmt(existing.cod, m.cod);
+    dispatchBrandSummaryMap.set(bId, existing);
   }
 
   const dispatchBreakdownRows = Array.from(dispatchBrandSummaryMap.values()).map((b) => {
     const kbbPct = brandSettingsQuery.data?.[b.brandId] ?? defaultKbbPct;
-    const kbbCommission = (b.orderValue * kbbPct) / 100;
-    const advance50 = 0.5 * b.orderValue;
-    const netRemaining = advance50 - kbbCommission;
-    const totalBrandPayable = advance50 + netRemaining;
-
+    const kbbCommission = scaleAmt(b.full, kbbPct / 100);
+    const advance50 = scaleAmt(b.cod, 0.5);
+    const netRemaining = subAmt(advance50, kbbCommission);
+    const totalBrandPayable = addAmt(advance50, netRemaining);
     return {
       brandId: b.brandId,
       brandName: b.brandName,
       orderCount: b.orderCount,
-      orderValue: b.orderValue,
+      prepaidCount: b.prepaidCount,
+      orderValue: b.full,
+      codValue: b.cod,
       kbbPct,
       kbbCommission,
       advance50,
@@ -184,11 +192,13 @@ export function KbbInvoiceDialog({
   });
 
   const totalDispatchOrderCount = dispatchBreakdownRows.reduce((acc, r) => acc + r.orderCount, 0);
-  const totalDispatchValue = dispatchBreakdownRows.reduce((acc, r) => acc + r.orderValue, 0);
-  const totalDispatchKbbCommission = dispatchBreakdownRows.reduce((acc, r) => acc + r.kbbCommission, 0);
-  const totalDispatchAdvance50 = dispatchBreakdownRows.reduce((acc, r) => acc + r.advance50, 0);
-  const totalDispatchNetRemaining = dispatchBreakdownRows.reduce((acc, r) => acc + r.netRemaining, 0);
-  const totalDispatchOverallPayable = dispatchBreakdownRows.reduce((acc, r) => acc + r.totalBrandPayable, 0);
+  const totalDispatchPrepaidCount = dispatchBreakdownRows.reduce((acc, r) => acc + r.prepaidCount, 0);
+  const totalDispatchValue = sumAmt(dispatchBreakdownRows.map((r) => r.orderValue));
+  const totalDispatchCod = sumAmt(dispatchBreakdownRows.map((r) => r.codValue));
+  const totalDispatchKbbCommission = sumAmt(dispatchBreakdownRows.map((r) => r.kbbCommission));
+  const totalDispatchAdvance50 = sumAmt(dispatchBreakdownRows.map((r) => r.advance50));
+  const totalDispatchNetRemaining = sumAmt(dispatchBreakdownRows.map((r) => r.netRemaining));
+  const totalDispatchOverallPayable = sumAmt(dispatchBreakdownRows.map((r) => r.totalBrandPayable));
 
 
   // ===================== FINAL SETTLEMENT BREAKDOWN CALCULATIONS =====================
@@ -196,64 +206,49 @@ export function KbbInvoiceDialog({
   const isOrderReturned = (st: string) =>
     ["returned", "delivery_failed", "hub_issue", "cancelled"].includes(st);
 
-  const settlementBrandMap = new Map<string, {
-    brandId: string;
-    brandName: string;
-    deliveredCount: number;
-    deliveredValue: number;
-    returnedCount: number;
-    returnedValue: number;
-  }>();
+  type SettleSums = {
+    brandId: string; brandName: string;
+    deliveredCount: number; deliveredValue: Amt; deliveredCod: Amt;
+    returnedCount: number; returnedValue: Amt; returnedCod: Amt;
+  };
+  const settlementBrandMap = new Map<string, SettleSums>();
 
   for (const o of fullOrdersList) {
-    const val = o.cod_amount_expected !== null && o.cod_amount_expected !== undefined && o.cod_amount_expected > 0
-      ? Number(o.cod_amount_expected)
-      : Number(o.order_total || 0);
-
+    const m = orderMoney(o);
     const bId = o.brand_id;
-    const bName = o.brand?.name || "Unknown Brand";
-
-    let existing = settlementBrandMap.get(bId);
-    if (!existing) {
-      existing = {
-        brandId: bId,
-        brandName: bName,
-        deliveredCount: 0,
-        deliveredValue: 0,
-        returnedCount: 0,
-        returnedValue: 0,
-      };
-      settlementBrandMap.set(bId, existing);
-    }
-
+    const existing = settlementBrandMap.get(bId) ?? {
+      brandId: bId, brandName: o.brand?.name || "Unknown Brand",
+      deliveredCount: 0, deliveredValue: ZERO, deliveredCod: ZERO,
+      returnedCount: 0, returnedValue: ZERO, returnedCod: ZERO,
+    };
     if (isOrderReturned(o.status)) {
       existing.returnedCount += 1;
-      existing.returnedValue += val;
+      existing.returnedValue = addAmt(existing.returnedValue, m.full);
+      existing.returnedCod = addAmt(existing.returnedCod, m.cod);
     } else {
       // Treat as delivered / settled
       existing.deliveredCount += 1;
-      existing.deliveredValue += val;
+      existing.deliveredValue = addAmt(existing.deliveredValue, m.full);
+      existing.deliveredCod = addAmt(existing.deliveredCod, m.cod);
     }
+    settlementBrandMap.set(bId, existing);
   }
 
   const settlementBreakdownRows = Array.from(settlementBrandMap.values()).map((b) => {
     const kbbPct = brandSettingsQuery.data?.[b.brandId] ?? defaultKbbPct;
-    
-    // Delivered 50% remaining
-    const delivered50Remaining = 0.5 * b.deliveredValue;
-    const kbbCommission = (b.deliveredValue * kbbPct) / 100;
-    
-    // Returned orders: 50% advance previously paid by KBB at dispatch time is clawed back / deducted
-    const returned50Clawback = 0.5 * b.returnedValue;
-    
+    // Delivered: 50% of the COD cash remaining; commission on the full value
+    const delivered50Remaining = scaleAmt(b.deliveredCod, 0.5);
+    const kbbCommission = scaleAmt(b.deliveredValue, kbbPct / 100);
+    // Returned orders: the 50% advance KBB paid on their COD is clawed back
+    const returned50Clawback = scaleAmt(b.returnedCod, 0.5);
     // Net Settlement Payable = (Delivered 50% Remaining) - KBB Commission - Returned 50% Advance
-    const netSettlementPayable = delivered50Remaining - kbbCommission - returned50Clawback;
-
+    const netSettlementPayable = subAmt(subAmt(delivered50Remaining, kbbCommission), returned50Clawback);
     return {
       brandId: b.brandId,
       brandName: b.brandName,
       deliveredCount: b.deliveredCount,
       deliveredValue: b.deliveredValue,
+      deliveredCod: b.deliveredCod,
       delivered50Remaining,
       kbbPct,
       kbbCommission,
@@ -265,13 +260,14 @@ export function KbbInvoiceDialog({
   });
 
   const totalSettlementDeliveredCount = settlementBreakdownRows.reduce((acc, r) => acc + r.deliveredCount, 0);
-  const totalSettlementDeliveredValue = settlementBreakdownRows.reduce((acc, r) => acc + r.deliveredValue, 0);
-  const totalSettlementDelivered50Remaining = settlementBreakdownRows.reduce((acc, r) => acc + r.delivered50Remaining, 0);
-  const totalSettlementKbbCommission = settlementBreakdownRows.reduce((acc, r) => acc + r.kbbCommission, 0);
+  const totalSettlementDeliveredValue = sumAmt(settlementBreakdownRows.map((r) => r.deliveredValue));
+  const totalSettlementDeliveredCod = sumAmt(settlementBreakdownRows.map((r) => r.deliveredCod));
+  const totalSettlementDelivered50Remaining = sumAmt(settlementBreakdownRows.map((r) => r.delivered50Remaining));
+  const totalSettlementKbbCommission = sumAmt(settlementBreakdownRows.map((r) => r.kbbCommission));
   const totalSettlementReturnedCount = settlementBreakdownRows.reduce((acc, r) => acc + r.returnedCount, 0);
-  const totalSettlementReturnedValue = settlementBreakdownRows.reduce((acc, r) => acc + r.returnedValue, 0);
-  const totalSettlementReturned50Clawback = settlementBreakdownRows.reduce((acc, r) => acc + r.returned50Clawback, 0);
-  const totalNetSettlementPayable = settlementBreakdownRows.reduce((acc, r) => acc + r.netSettlementPayable, 0);
+  const totalSettlementReturnedValue = sumAmt(settlementBreakdownRows.map((r) => r.returnedValue));
+  const totalSettlementReturned50Clawback = sumAmt(settlementBreakdownRows.map((r) => r.returned50Clawback));
+  const totalNetSettlementPayable = sumAmt(settlementBreakdownRows.map((r) => r.netSettlementPayable));
 
   // Metadata labels
   let invoiceNumber = "INV-KBB-GEN";
@@ -321,11 +317,12 @@ export function KbbInvoiceDialog({
   useEffect(() => {
     if (open && !isLoading && displayOrderCount > 0 && !viewingSaved) {
       const isAdv = invoiceType === "dispatch_advance";
-      const totalVal = isAdv ? totalDispatchValue : (totalSettlementDeliveredValue + totalSettlementReturnedValue);
-      const advAmt = isAdv ? totalDispatchAdvance50 : 0;
-      const netRem = isAdv ? totalDispatchNetRemaining : totalSettlementDelivered50Remaining;
+      // Saved amounts are PKR.
+      const totalVal = isAdv ? totalDispatchValue.pkr : (totalSettlementDeliveredValue.pkr + totalSettlementReturnedValue.pkr);
+      const advAmt = isAdv ? totalDispatchAdvance50.pkr : 0;
+      const netRem = isAdv ? totalDispatchNetRemaining.pkr : totalSettlementDelivered50Remaining.pkr;
       // What this invoice asks KBB to pay: the 50% advance, or the net settlement.
-      const payable = isAdv ? totalDispatchAdvance50 : totalNetSettlementPayable;
+      const payable = isAdv ? totalDispatchAdvance50.pkr : totalNetSettlementPayable.pkr;
       const brandCnt = fullOrdersByBrand.length;
 
       saveInvoice.mutate({
@@ -557,7 +554,7 @@ export function KbbInvoiceDialog({
                             Description
                           </th>
                           <th className="border border-slate-400 px-4 py-2 text-right font-bold text-slate-800 w-48">
-                            Amount (PKR)
+                            Amount (PKR / BDT)
                           </th>
                         </tr>
                       </thead>
@@ -565,19 +562,27 @@ export function KbbInvoiceDialog({
                         <tr>
                           <td className="border border-slate-400 px-4 py-2 text-slate-800">Total Shipment Value</td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                            {fmtNum(totalDispatchValue)}
+                            <AmtCell v={totalDispatchValue} />
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">
+                            COD to Collect{totalDispatchPrepaidCount > 0 ? ` (${totalDispatchPrepaidCount} paid online: no advance or COD)` : ""}
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
+                            <AmtCell v={totalDispatchCod} />
                           </td>
                         </tr>
                         <tr>
                           <td className="border border-slate-400 px-4 py-2 text-slate-800">Total KBB Commission</td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                            {fmtNum(totalDispatchKbbCommission)}
+                            <AmtCell v={totalDispatchKbbCommission} />
                           </td>
                         </tr>
                         <tr>
                           <td className="border border-slate-400 px-4 py-2 text-slate-800">50% Advance Payable on Dispatch</td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900 font-bold">
-                            {fmtNum(totalDispatchAdvance50)}
+                            <AmtCell v={totalDispatchAdvance50} />
                           </td>
                         </tr>
                         <tr>
@@ -585,7 +590,7 @@ export function KbbInvoiceDialog({
                             Net Remaining Payable after COD Delivery
                           </td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                            {fmtNum(totalDispatchNetRemaining)}
+                            <AmtCell v={totalDispatchNetRemaining} />
                           </td>
                         </tr>
                         <tr className="font-bold bg-slate-50">
@@ -593,7 +598,7 @@ export function KbbInvoiceDialog({
                             Total Overall Payable by KBB
                           </td>
                           <td className="border border-slate-400 px-4 py-2.5 text-right text-slate-900 text-sm sm:text-base">
-                            {fmtNum(totalDispatchOverallPayable)}
+                            <AmtCell v={totalDispatchOverallPayable} />
                           </td>
                         </tr>
                       </tbody>
@@ -606,7 +611,7 @@ export function KbbInvoiceDialog({
                       <thead>
                         <tr>
                           <th
-                            colSpan={8}
+                            colSpan={9}
                             className="border border-slate-400 bg-slate-200 px-4 py-2 text-center font-bold tracking-wider text-slate-900 uppercase"
                           >
                             BRAND-WISE BREAKDOWN
@@ -615,15 +620,16 @@ export function KbbInvoiceDialog({
                         <tr className="bg-slate-100 text-center font-bold text-slate-800">
                           <th className="border border-slate-400 px-2.5 py-2 text-left">Brand</th>
                           <th className="border border-slate-400 px-2.5 py-2 text-center">Total Orders</th>
-                          <th className="border border-slate-400 px-2.5 py-2 text-right">Order Value (PKR)</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">Order Value</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">COD to Collect</th>
                           <th className="border border-slate-400 px-2.5 py-2 text-center">KBB Commission %</th>
-                          <th className="border border-slate-400 px-2.5 py-2 text-right">KBB Commission (PKR)</th>
-                          <th className="border border-slate-400 px-2.5 py-2 text-right">50% Advance on Dispatch (PKR)</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">KBB Commission</th>
+                          <th className="border border-slate-400 px-2.5 py-2 text-right">50% Advance on Dispatch</th>
                           <th className="border border-slate-400 px-2.5 py-2 text-right">
-                            Net Remaining Payable after COD (PKR)
+                            Net Remaining Payable after COD
                           </th>
                           <th className="border border-slate-400 px-2.5 py-2 text-right">
-                            Total Overall Payable by KBB (PKR)
+                            Total Overall Payable by KBB
                           </th>
                         </tr>
                       </thead>
@@ -637,22 +643,26 @@ export function KbbInvoiceDialog({
                               {row.orderCount}
                             </td>
                             <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
-                              {fmtNum(row.orderValue)}
+                              <AmtCell v={row.orderValue} />
+                            </td>
+                            <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
+                              <AmtCell v={row.codValue} />
+                              {row.prepaidCount > 0 && <span className="block text-[10px] text-slate-500">{row.prepaidCount} paid online</span>}
                             </td>
                             <td className="border border-slate-400 px-2.5 py-2 text-center text-slate-800">
                               {row.kbbPct}%
                             </td>
                             <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
-                              {fmtNum(row.kbbCommission)}
+                              <AmtCell v={row.kbbCommission} />
                             </td>
                             <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800 font-bold">
-                              {fmtNum(row.advance50)}
+                              <AmtCell v={row.advance50} />
                             </td>
                             <td className="border border-slate-400 px-2.5 py-2 text-right text-slate-800">
-                              {fmtNum(row.netRemaining)}
+                              <AmtCell v={row.netRemaining} />
                             </td>
                             <td className="border border-slate-400 px-2.5 py-2 text-right font-bold text-slate-900">
-                              {fmtNum(row.totalBrandPayable)}
+                              <AmtCell v={row.totalBrandPayable} />
                             </td>
                           </tr>
                         ))}
@@ -662,20 +672,23 @@ export function KbbInvoiceDialog({
                             {totalDispatchOrderCount}
                           </td>
                           <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalDispatchValue)}
+                            <AmtCell v={totalDispatchValue} />
+                          </td>
+                          <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
+                            <AmtCell v={totalDispatchCod} />
                           </td>
                           <td className="border border-slate-400 px-2.5 py-2.5 text-center text-slate-500">&mdash;</td>
                           <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalDispatchKbbCommission)}
+                            <AmtCell v={totalDispatchKbbCommission} />
                           </td>
                           <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalDispatchAdvance50)}
+                            <AmtCell v={totalDispatchAdvance50} />
                           </td>
                           <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalDispatchNetRemaining)}
+                            <AmtCell v={totalDispatchNetRemaining} />
                           </td>
                           <td className="border border-slate-400 px-2.5 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalDispatchOverallPayable)}
+                            <AmtCell v={totalDispatchOverallPayable} />
                           </td>
                         </tr>
                       </tbody>
@@ -688,15 +701,15 @@ export function KbbInvoiceDialog({
                       <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">Amount due on this invoice</p>
                       <p className="text-xs text-slate-600">50% advance, payable by KBB on dispatch. The remaining amount is settled on the final settlement invoice.</p>
                     </div>
-                    <p className="text-2xl font-bold text-slate-900">{fmtNum(totalDispatchAdvance50)} PKR</p>
+                    <p className="text-2xl font-bold text-slate-900">{fmtNum(totalDispatchAdvance50.pkr)} PKR<span className="block text-sm font-semibold text-slate-600">{fmtNum(totalDispatchAdvance50.bdt)} BDT</span></p>
                   </div>
 
                   {/* Payment Terms & Remittance Footnote */}
                   <div className="border-t border-slate-300 pt-4 text-xs text-slate-600">
                     <p className="font-bold text-slate-800">Dispatch Payment Terms:</p>
                     <ul className="mt-1 list-disc pl-4 space-y-0.5 text-slate-600">
-                      <li>50% Advance on Dispatch ({fmtNum(totalDispatchAdvance50)} PKR) is payable immediately upon shipment departure.</li>
-                      <li>Net Remaining Payable after COD ({fmtNum(totalDispatchNetRemaining)} PKR) is settled upon customer delivery.</li>
+                      <li>50% Advance on Dispatch ({fmtNum(totalDispatchAdvance50.pkr)} PKR / {fmtNum(totalDispatchAdvance50.bdt)} BDT) is payable immediately upon shipment departure.</li>
+                      <li>Net Remaining Payable after COD ({fmtNum(totalDispatchNetRemaining.pkr)} PKR / {fmtNum(totalDispatchNetRemaining.bdt)} BDT) is settled upon customer delivery.</li>
                       <li>Payment Reference: <strong className="text-slate-900">{invoiceNumber}</strong>.</li>
                     </ul>
                   </div>
@@ -723,7 +736,7 @@ export function KbbInvoiceDialog({
                             Description
                           </th>
                           <th className="border border-slate-400 px-4 py-2 text-right font-bold text-slate-800 w-48">
-                            Amount (PKR)
+                            Amount (PKR / BDT)
                           </th>
                         </tr>
                       </thead>
@@ -733,7 +746,15 @@ export function KbbInvoiceDialog({
                             Delivered Orders Total Value ({totalSettlementDeliveredCount} Orders)
                           </td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                            {fmtNum(totalSettlementDeliveredValue)}
+                            <AmtCell v={totalSettlementDeliveredValue} />
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="border border-slate-400 px-4 py-2 text-slate-800">
+                            Delivered Orders COD Collected (paid-online orders: 0)
+                          </td>
+                          <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
+                            <AmtCell v={totalSettlementDeliveredCod} />
                           </td>
                         </tr>
                         <tr>
@@ -741,7 +762,7 @@ export function KbbInvoiceDialog({
                             (+) Delivered Orders 50% Remaining Payable
                           </td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-bold text-slate-900">
-                            {fmtNum(totalSettlementDelivered50Remaining)}
+                            <AmtCell v={totalSettlementDelivered50Remaining} />
                           </td>
                         </tr>
                         <tr>
@@ -749,7 +770,7 @@ export function KbbInvoiceDialog({
                             (&minus;) Less KBB Commission on Delivered Orders
                           </td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-red-700">
-                            &minus; {fmtNum(totalSettlementKbbCommission)}
+                            <AmtCell v={totalSettlementKbbCommission} neg />
                           </td>
                         </tr>
                         <tr>
@@ -757,7 +778,7 @@ export function KbbInvoiceDialog({
                             Returned / Failed Orders Total Value ({totalSettlementReturnedCount} Orders)
                           </td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-slate-900">
-                            {fmtNum(totalSettlementReturnedValue)}
+                            <AmtCell v={totalSettlementReturnedValue} />
                           </td>
                         </tr>
                         <tr>
@@ -765,7 +786,7 @@ export function KbbInvoiceDialog({
                             (&minus;) Less Returned Orders 50% Advance Previously Paid (Clawback)
                           </td>
                           <td className="border border-slate-400 px-4 py-2 text-right font-medium text-red-700">
-                            &minus; {fmtNum(totalSettlementReturned50Clawback)}
+                            <AmtCell v={totalSettlementReturned50Clawback} neg />
                           </td>
                         </tr>
                         <tr className="font-bold bg-emerald-50 text-slate-900">
@@ -773,7 +794,7 @@ export function KbbInvoiceDialog({
                             Net Final Settlement Payable by KBB
                           </td>
                           <td className="border border-slate-400 px-4 py-2.5 text-right text-sm sm:text-base text-emerald-800">
-                            {fmtNum(totalNetSettlementPayable)}
+                            <AmtCell v={totalNetSettlementPayable} />
                           </td>
                         </tr>
                       </tbody>
@@ -795,13 +816,13 @@ export function KbbInvoiceDialog({
                         <tr className="bg-slate-100 text-center font-bold text-slate-800">
                           <th className="border border-slate-400 px-2 py-2 text-left">Brand</th>
                           <th className="border border-slate-400 px-2 py-2 text-center">Delivered Orders</th>
-                          <th className="border border-slate-400 px-2 py-2 text-right">Delivered Value (PKR)</th>
-                          <th className="border border-slate-400 px-2 py-2 text-right">50% Remaining (PKR)</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">Delivered Value</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">50% Remaining</th>
                           <th className="border border-slate-400 px-2 py-2 text-center">KBB Comm %</th>
-                          <th className="border border-slate-400 px-2 py-2 text-right">KBB Comm (PKR)</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">KBB Comm</th>
                           <th className="border border-slate-400 px-2 py-2 text-center">Returned Orders</th>
-                          <th className="border border-slate-400 px-2 py-2 text-right">Returned 50% Advance Clawback (PKR)</th>
-                          <th className="border border-slate-400 px-2 py-2 text-right">Net Settlement Payable (PKR)</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">Returned 50% Advance Clawback</th>
+                          <th className="border border-slate-400 px-2 py-2 text-right">Net Settlement Payable</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -814,25 +835,25 @@ export function KbbInvoiceDialog({
                               {row.deliveredCount}
                             </td>
                             <td className="border border-slate-400 px-2 py-2 text-right text-slate-800">
-                              {fmtNum(row.deliveredValue)}
+                              <AmtCell v={row.deliveredValue} />
                             </td>
                             <td className="border border-slate-400 px-2 py-2 text-right font-medium text-slate-900">
-                              {fmtNum(row.delivered50Remaining)}
+                              <AmtCell v={row.delivered50Remaining} />
                             </td>
                             <td className="border border-slate-400 px-2 py-2 text-center text-slate-800">
                               {row.kbbPct}%
                             </td>
                             <td className="border border-slate-400 px-2 py-2 text-right text-red-700">
-                              &minus;{fmtNum(row.kbbCommission)}
+                              <AmtCell v={row.kbbCommission} neg />
                             </td>
                             <td className="border border-slate-400 px-2 py-2 text-center text-slate-800 font-medium">
                               {row.returnedCount}
                             </td>
                             <td className="border border-slate-400 px-2 py-2 text-right text-red-700">
-                              &minus;{fmtNum(row.returned50Clawback)}
+                              <AmtCell v={row.returned50Clawback} neg />
                             </td>
                             <td className="border border-slate-400 px-2 py-2 text-right font-bold text-slate-900">
-                              {fmtNum(row.netSettlementPayable)}
+                              <AmtCell v={row.netSettlementPayable} />
                             </td>
                           </tr>
                         ))}
@@ -842,23 +863,23 @@ export function KbbInvoiceDialog({
                             {totalSettlementDeliveredCount}
                           </td>
                           <td className="border border-slate-400 px-2 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalSettlementDeliveredValue)}
+                            <AmtCell v={totalSettlementDeliveredValue} />
                           </td>
                           <td className="border border-slate-400 px-2 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalSettlementDelivered50Remaining)}
+                            <AmtCell v={totalSettlementDelivered50Remaining} />
                           </td>
                           <td className="border border-slate-400 px-2 py-2.5 text-center text-slate-500">&mdash;</td>
                           <td className="border border-slate-400 px-2 py-2.5 text-right text-red-700">
-                            &minus;{fmtNum(totalSettlementKbbCommission)}
+                            <AmtCell v={totalSettlementKbbCommission} neg />
                           </td>
                           <td className="border border-slate-400 px-2 py-2.5 text-center text-slate-900">
                             {totalSettlementReturnedCount}
                           </td>
                           <td className="border border-slate-400 px-2 py-2.5 text-right text-red-700">
-                            &minus;{fmtNum(totalSettlementReturned50Clawback)}
+                            <AmtCell v={totalSettlementReturned50Clawback} neg />
                           </td>
                           <td className="border border-slate-400 px-2 py-2.5 text-right text-slate-900">
-                            {fmtNum(totalNetSettlementPayable)}
+                            <AmtCell v={totalNetSettlementPayable} />
                           </td>
                         </tr>
                       </tbody>
@@ -871,17 +892,18 @@ export function KbbInvoiceDialog({
                       <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">Amount due on this invoice</p>
                       <p className="text-xs text-slate-600">Final settlement payable by KBB, after commission and returned-order clawbacks.</p>
                     </div>
-                    <p className="text-2xl font-bold text-slate-900">{fmtNum(totalNetSettlementPayable)} PKR</p>
+                    <p className="text-2xl font-bold text-slate-900">{fmtNum(totalNetSettlementPayable.pkr)} PKR<span className="block text-sm font-semibold text-slate-600">{fmtNum(totalNetSettlementPayable.bdt)} BDT</span></p>
                   </div>
 
                   {/* Payment Terms & Remittance Footnote */}
                   <div className="border-t border-slate-300 pt-4 text-xs text-slate-600">
                     <p className="font-bold text-slate-800">Final Settlement Accounting Notes:</p>
                     <ul className="mt-1 list-disc pl-4 space-y-0.5 text-slate-600">
-                      <li>Remaining 50% ({fmtNum(totalSettlementDelivered50Remaining)} PKR) is collectible for Delivered orders.</li>
-                      <li>KBB Commission ({fmtNum(totalSettlementKbbCommission)} PKR) is deducted from Delivered order earnings.</li>
-                      <li>Returned orders 50% advance previously paid at dispatch ({fmtNum(totalSettlementReturned50Clawback)} PKR) is clawed back.</li>
-                      <li>Net Final Amount Payable by KBB: <strong className="text-slate-900">{fmtNum(totalNetSettlementPayable)} PKR</strong>.</li>
+                      <li>Remaining 50% ({fmtNum(totalSettlementDelivered50Remaining.pkr)} PKR / {fmtNum(totalSettlementDelivered50Remaining.bdt)} BDT) is collectible for Delivered orders.</li>
+                      <li>Paid-online orders carry no advance, COD or clawback; their KBB commission is paid by V360 and deducted here.</li>
+                      <li>KBB Commission ({fmtNum(totalSettlementKbbCommission.pkr)} PKR / {fmtNum(totalSettlementKbbCommission.bdt)} BDT) is deducted from Delivered order earnings.</li>
+                      <li>Returned orders 50% advance previously paid at dispatch ({fmtNum(totalSettlementReturned50Clawback.pkr)} PKR / {fmtNum(totalSettlementReturned50Clawback.bdt)} BDT) is clawed back.</li>
+                      <li>Net Final Amount Payable by KBB: <strong className="text-slate-900">{fmtNum(totalNetSettlementPayable.pkr)} PKR / {fmtNum(totalNetSettlementPayable.bdt)} BDT</strong>.</li>
                     </ul>
                   </div>
                 </>
@@ -912,18 +934,21 @@ export function KbbInvoiceDialog({
                 ) : (
                   fullOrdersByBrand.map((brandGroup) => {
                     let brandItemQtySum = 0;
-                    let brandItemTotalSum = 0;
+                    let brandItemTotalSum: Amt = ZERO;
 
                     const brandRows = brandGroup.orders.flatMap((order) => {
                       const items = order.order_items || [];
                       const isReturned = isOrderReturned(order.status);
-                      // One amount per order: the order total, shipping included (no separate shipping line).
-                      const orderTotal = Number(order.order_total || order.cod_amount_expected || 0);
-                      brandItemTotalSum += orderTotal;
+                      // One amount per order: the full order value (shipping included), in PKR and BDT.
+                      const m = orderMoney(order);
+                      const orderTotal = m.full;
+                      const paidOnline = !m.paidOnline ? null : m.cod.pkr <= 0 ? "Paid online: no COD" : "Part paid online: COD is the unpaid part";
+                      brandItemTotalSum = addAmt(brandItemTotalSum, orderTotal);
                       if (!items.length) {
-                        const val = orderTotal;
+                        const val = orderTotal.pkr;
                         return [{
                           orderTotal,
+                          paidOnline,
                           orderRowSpan: 1,
                           orderNumber: order.order_number,
                           status: order.status,
@@ -942,6 +967,7 @@ export function KbbInvoiceDialog({
                         brandItemQtySum += qty;
                         return {
                           orderTotal,
+                          paidOnline,
                           orderRowSpan: idx === 0 ? items.length : 0,
                           orderNumber: order.order_number,
                           status: order.status,
@@ -971,7 +997,7 @@ export function KbbInvoiceDialog({
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                               Brand total (all orders)
                             </span>
-                            <p className="text-sm font-bold text-slate-900">{fmtNum(brandItemTotalSum)} PKR</p>
+                            <p className="text-sm font-bold text-slate-900"><AmtCell v={brandItemTotalSum} /></p>
                           </div>
                         </div>
 
@@ -986,7 +1012,7 @@ export function KbbInvoiceDialog({
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-left w-24">SKU</th>
                                 <th className="border border-slate-300 px-2.5 py-1.5 text-left w-20">Variant</th>
                                                                 <th className="border border-slate-300 px-2.5 py-1.5 text-center w-14">Qty</th>
-                                <th className="border border-slate-300 px-2.5 py-1.5 text-right w-32">Order Total incl. shipping (PKR)</th>
+                                <th className="border border-slate-300 px-2.5 py-1.5 text-right w-32">Order Total incl. shipping</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -994,6 +1020,9 @@ export function KbbInvoiceDialog({
                                 <tr key={idx} className={`hover:bg-slate-50/50 ${row.isReturned ? "bg-red-50/40" : ""}`}>
                                   <td className="border border-slate-300 px-2.5 py-1.5 font-medium text-slate-900">
                                     {row.orderNumber}
+                                    {row.paidOnline && row.orderRowSpan > 0 && (
+                                      <div className="text-[10px] font-normal text-slate-500">{row.paidOnline}</div>
+                                    )}
                                   </td>
                                   <td className="border border-slate-300 px-2.5 py-1.5 text-center">
                                     <span
@@ -1026,7 +1055,7 @@ export function KbbInvoiceDialog({
                                   </td>
                                   {row.orderRowSpan > 0 && (
                                     <td rowSpan={row.orderRowSpan} className="border border-slate-300 px-2.5 py-1.5 text-right align-middle font-semibold text-slate-900">
-                                      {fmtNum(row.orderTotal)}
+                                      <AmtCell v={row.orderTotal} />
                                     </td>
                                   )}
                                 </tr>
@@ -1041,7 +1070,7 @@ export function KbbInvoiceDialog({
                                   {brandItemQtySum}
                                 </td>
                                 <td className="border border-slate-300 px-2.5 py-2 text-right text-slate-900">
-                                  {fmtNum(brandItemTotalSum)}
+                                  <AmtCell v={brandItemTotalSum} />
                                 </td>
                               </tr>
                             </tfoot>

@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import { MONEY_COLUMNS } from "@/lib/money";
 import { describeError, describeFunctionError } from "@/lib/errors";
 import type {
   BrandMoneySettings, BrandPayable, BrandPayoutCandidate, BrandRow, BrandShippingInvoice, BrandShippingInvoiceLine, FxRate, InboundBatchAdmin, InvoicePaymentStatus, InvoiceRecord, InvoiceType, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
@@ -86,7 +87,7 @@ export function useOrder(id: string) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("orders")
-        .select("*, brand:organizations(name), order_items(*), inbound_batch:inbound_batches(*), shipment:shipments(id, code, shipping_partner, tracking_number, origin, destination, status, dispatched_at, received_at)")
+        .select(`*, ${MONEY_COLUMNS}, brand:organizations(name), order_items(*), inbound_batch:inbound_batches(*), shipment:shipments(id, code, shipping_partner, tracking_number, origin, destination, status, dispatched_at, received_at)`)
         .eq("id", id).maybeSingle();
       if (error) throw error;
       if (data) (data as OpsOrderDetail).order_items.sort((a: OrderItem, b: OrderItem) => a.product_name.localeCompare(b.product_name));

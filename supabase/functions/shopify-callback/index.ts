@@ -137,7 +137,8 @@ async function handle(req: Request): Promise<Response> {
     });
   if (saveErr) {
     console.error("save failed", saveErr);
-    return back("error", saveErr.message);
+    // Our own RAISE messages (P0001) are written for users; anything else stays in the logs.
+    return back("error", saveErr.code === "P0001" ? saveErr.message : "The store couldn't be saved. Please try again.");
   }
 
   // 5. Register webhooks. Order topics need read_orders on the app.
