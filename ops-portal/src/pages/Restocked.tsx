@@ -1,73 +1,13 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Archive, PackageCheck, Truck } from "lucide-react";
+import { Archive, PackageCheck } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
-import { useDispatchedItems, useInventoryOrders, useRestockedItems } from "@/hooks/useData";
+import { useInventoryOrders, useRestockedItems } from "@/hooks/useData";
 import { fmtMoney, fmtShort } from "@/lib/format";
 import { STATUS } from "@/lib/status";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Pill } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
-
-function DispatchedTable() {
-  const hideMoney = !useOps().can("orders.view_money");
-  const q = useDispatchedItems();
-  const rows = q.data ?? [];
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[980px] text-[13.5px]">
-        <thead className="table-head">
-          <tr>
-            <th>Item</th>
-            <th>Order</th>
-            <th>Customer</th>
-            <th>Status</th>
-            <th className="text-right">Qty</th>
-            {!hideMoney && <th className="text-right">Line total</th>}
-            <th>Dispatched</th>
-            <th>Shipment</th>
-          </tr>
-        </thead>
-        {q.isLoading ? <SkeletonRows cols={hideMoney ? 7 : 8} /> : (
-          <tbody className="table-body">
-            {rows.map((r) => (
-              <tr key={r.order_item_id}>
-                <td>
-                  <span>{r.product_name}</span>
-                  {r.variant && <span className="text-faint"> · {r.variant}</span>}
-                  {r.sku && <div className="text-[12px] text-faint">{r.sku}</div>}
-                </td>
-                <td>
-                  <Link to={`/orders/${r.order_id}`} className="hover:underline">
-                    {r.order_number}
-                  </Link>
-                  <div className="text-[12px] text-faint">{r.brand_name}</div>
-                </td>
-                <td>
-                  <span>{r.customer_name ?? "—"}</span>
-                  {r.city && <div className="text-[12px] text-faint">{r.city}</div>}
-                </td>
-                <td>
-                  {STATUS[r.status as keyof typeof STATUS]
-                    ? <Pill group={STATUS[r.status as keyof typeof STATUS].group} label={STATUS[r.status as keyof typeof STATUS].label} />
-                    : <span className="text-faint">{r.status}</span>}
-                </td>
-                <td className="text-right">{r.quantity}</td>
-                {!hideMoney && <td className="text-right whitespace-nowrap">{fmtMoney(r.line_total, r.currency)}</td>}
-                <td className="whitespace-nowrap text-muted">{fmtShort(r.dispatched_at)}</td>
-                <td>
-                  {r.shipment_code
-                    ? <Link to={`/shipments/${r.shipment_id}`} className="hover:underline">{r.shipment_code}</Link>
-                    : <span className="text-faint">—</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        )}
-      </table>
-    </div>
-  );
-}
 
 function StockTable() {
   const hideMoney = !useOps().can("orders.view_money");
@@ -232,13 +172,11 @@ function LocalStockOrdersTable() {
 }
 
 export function Restocked() {
-  const [tab, setTab] = useState<"orders" | "stock" | "local">("orders");
+  const [tab, setTab] = useState<"stock" | "local">("stock");
   const stock = useRestockedItems();
-  const dispatched = useDispatchedItems();
   const localOrders = useInventoryOrders();
 
   const tabs = [
-    { key: "orders" as const, label: "Order", icon: Truck, count: dispatched.data?.length },
     { key: "stock" as const, label: "Stock", icon: PackageCheck, count: stock.data?.length },
     { key: "local" as const, label: "Local stock orders", icon: Archive, count: localOrders.data ? [...new Set(localOrders.data.map(r => r.order_id))].length : undefined },
   ];
@@ -247,7 +185,7 @@ export function Restocked() {
     <>
       <PageHeader
         title="Inventory"
-        description="Dispatched orders from the Bangladesh warehouse, returned items restocked into inventory, and orders fulfilled from local brand stock."
+        description="Returned items restocked into inventory, and orders fulfilled from local brand stock."
       />
 
       <div role="tablist" className="-mx-1 mb-4 flex gap-1 overflow-x-auto border-b border-line px-1">
@@ -270,15 +208,6 @@ export function Restocked() {
             {stock.isError && <ErrorState error={stock.error} onRetry={() => stock.refetch()} title="Stock didn't load" />}
             {!stock.isLoading && !stock.isError && stock.data?.length === 0 && (
               <EmptyState icon={<PackageCheck className="h-6 w-6" />} title="No restocked items" />
-            )}
-          </>
-        )}
-        {tab === "orders" && (
-          <>
-            <DispatchedTable />
-            {dispatched.isError && <ErrorState error={dispatched.error} onRetry={() => dispatched.refetch()} title="Orders didn't load" />}
-            {!dispatched.isLoading && !dispatched.isError && dispatched.data?.length === 0 && (
-              <EmptyState icon={<Truck className="h-6 w-6" />} title="No dispatched orders" />
             )}
           </>
         )}
