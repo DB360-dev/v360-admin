@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, Inbox } from "lucide-react";
+import { useOps } from "@/context/OpsContext";
 import { useAcceptBdStockOrder, useBatchOrders, useInboundBatches, type OrderWithItems } from "@/hooks/useData";
 import { describeError } from "@/lib/errors";
 import { ActionDialog } from "@/components/ActionDialog";
@@ -15,6 +16,7 @@ import { EmptyState, ErrorState, Spinner } from "@/components/ui/States";
 import { ReceiveDialog } from "@/components/OrderDialogs";
 
 function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
+  const canReceiveHub = useOps().can("hub.receive");
   const q = useBatchOrders(batch.id);
   const [receiving, setReceiving] = useState<OrderWithItems | null>(null);
   const accept = useAcceptBdStockOrder({ inlineErrors: true });
@@ -28,7 +30,7 @@ function BatchOrders({ batch }: { batch: InboundBatchAdmin }) {
           .map((o) => ({ o, hasHubItems: o.order_items.some((i) => hubQty(i) > 0) }))
           .sort((a, b) => new Date(b.o.order_date).getTime() - new Date(a.o.order_date).getTime())
           .map(({ o, hasHubItems }) => {
-            const canReceive = o.status === "dispatched_to_hub" || o.status === "hub_issue";
+            const canReceive = canReceiveHub && (o.status === "dispatched_to_hub" || o.status === "hub_issue");
             const bdOnly = !hasHubItems;
             return (
               <li key={o.id} className="flex flex-wrap items-start gap-3 px-4 py-3">

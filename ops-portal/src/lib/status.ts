@@ -140,5 +140,5 @@ export const RETURN_DISPOSITION: Record<string, string> = {
 };
 
 export const ROLE_LABEL: Record<string, string> = {
-  admin: "V360 admin", operator: "V360 operator", partner_agent: "KBB agent", brand_owner: "Brand owner", brand_staff: "Brand staff",
+  admin: "V360 admin", operator: "V360 operator", warehouse: "V360 warehouse", partner_agent: "KBB agent", brand_owner: "Brand owner", brand_staff: "Brand staff",
 };

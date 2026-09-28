@@ -62,8 +62,8 @@ Deno.serve(async (req) => {
   });
   const { data: userData } = await asUser.auth.getUser();
   if (!userData?.user) return json(req, { error: "Your session has expired. Please sign in again." }, 401);
-  const { data: isV360 } = await asUser.rpc("is_v360");
-  if (!isV360) return json(req, { error: "Only V360 can update Shopify payment status" }, 403);
+  const { data: canPay } = await asUser.rpc("v360_can", { p_perm: "invoices.payment_status" });
+  if (!canPay) return json(req, { error: "Your role doesn't allow updating payment status" }, 403);
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY);
 

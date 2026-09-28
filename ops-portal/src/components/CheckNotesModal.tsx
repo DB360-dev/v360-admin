@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useOps } from "@/context/OpsContext";
 import { FileText, MessageSquare, User } from "lucide-react";
 import { Dialog } from "./ui/Dialog";
 import { Button } from "./ui/Button";
@@ -29,6 +30,7 @@ export function CheckNotesModal({
   const eventsQuery = useOrderEvents(orderId);
   const messagesQuery = useOrderMessages(orderId);
   const addNote = useAddNote();
+  const canAddNote = useOps().can("orders.add_note");
   const [newNote, setNewNote] = useState("");
 
   const orderData = orderQuery.data;
@@ -96,7 +98,7 @@ export function CheckNotesModal({
         )}
 
         {/* Add Note Input Form */}
-        <form onSubmit={handleAddNote} className="flex items-center gap-2 rounded-lg border border-line bg-sunken/40 p-2">
+        {canAddNote && <form onSubmit={handleAddNote} className="flex items-center gap-2 rounded-lg border border-line bg-sunken/40 p-2">
           <input
             type="text"
             className="input text-[13px] flex-1 bg-surface"
@@ -107,7 +109,7 @@ export function CheckNotesModal({
           <Button size="sm" type="submit" disabled={!newNote.trim() || addNote.isPending}>
             {addNote.isPending ? "Adding..." : "Add note"}
           </Button>
-        </form>
+        </form>}
 
         {/* Notes Timeline / History */}
         <div className="space-y-2">

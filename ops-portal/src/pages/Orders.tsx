@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Inbox, Search, StickyNote, X } from "lucide-react";
+import { useOps } from "@/context/OpsContext";
 import { PAGE_SIZE, useBrandOptions, useOrderList, useStatusCounts } from "@/hooks/useData";
 import { ORDER_VIEWS, RETURNED_DISCREPANCY_LABEL, STATUS, type StatusGroup } from "@/lib/status";
 import { fmtMoney, fmtShort, plural, since } from "@/lib/format";
@@ -157,6 +158,7 @@ function statusQuery(base: OrderStatus[] | null, picks: { fn: (o: OrderOverview)
 }
 
 export function Orders() {
+  const hideMoney = !useOps().can("orders.view_money");
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [notesOrder, setNotesOrder] = useState<OrderOverview | null>(null);
@@ -266,17 +268,17 @@ export function Orders() {
                 <th>Brand</th>
                 <th>Date</th>
                 <th>Customer</th>
-                <th className="text-right">COD</th>
+                {!hideMoney && <th className="text-right">COD</th>}
                 <th>Fulfilment status</th>
                 <th>Brand status</th>
                 <th>Master status</th>
                 <th>Notes</th>
-                <th>Payment status</th>
+                {!hideMoney && <th>Payment status</th>}
                 <th>Tracking</th>
                 <th>Actions</th>
               </tr>
             </thead>
-            {q.isLoading ? <SkeletonRows cols={13} /> : (
+            {q.isLoading ? <SkeletonRows cols={hideMoney ? 11 : 13} /> : (
               <tbody className={`table-body ${q.isFetching ? "opacity-70" : ""}`}>
                 {rows.map((o) => {
                   return (
@@ -289,7 +291,7 @@ export function Orders() {
                       <td className="max-w-[160px] truncate">{o.brand_name}</td>
                       <td className="whitespace-nowrap text-muted">{fmtShort(o.order_date)}</td>
                       <td><div className="max-w-[200px] truncate">{o.customer_name ?? "—"}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>
-                      <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>
+                      {!hideMoney && <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>}
                       <td><Pill {...fulfilmentStatus(o)} /></td>
                       <td><Pill {...brandStatus(o)} /></td>
                       <td>
@@ -299,7 +301,7 @@ export function Orders() {
                         </div>
                       </td>
                       <td>{o.has_note ? <span title="Has notes"><StickyNote className="h-4 w-4 text-muted" aria-label="Has notes" /></span> : null}</td>
-                      <td><Pill {...orderPaymentStatusPill(o)} /></td>
+                      {!hideMoney && <td><Pill {...orderPaymentStatusPill(o)} /></td>}
                       <td className="max-w-[180px] truncate text-muted">{where(o)}</td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <Button size="sm" variant="ghost" onClick={() => setNotesOrder(o)}>Check notes</Button>

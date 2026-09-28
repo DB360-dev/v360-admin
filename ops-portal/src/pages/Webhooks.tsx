@@ -120,7 +120,7 @@ function ShopifyCredentials() {
 }
 
 export function Webhooks() {
-  const { isV360 } = useOps();
+  const canReplay = useOps().can("webhooks.replay");
   const [failed, setFailed] = useState(true);
   const q = useWebhooks(failed);
   const replay = useReplayWebhook();
@@ -151,7 +151,7 @@ export function Webhooks() {
                       {w.error ? <span className="text-g-problem">{w.error}</span>
                         : w.processed_at ? <Pill group="done" label="Processed" /> : <Pill group="v360" label="Processing" />}
                     </td>
-                    <td className="text-right">{isV360 && w.error && (
+                    <td className="text-right">{canReplay && w.error && (
                       <Button size="sm" loading={replay.isPending && replay.variables === w.webhook_id} onClick={() => replay.mutate(w.webhook_id)}>Replay</Button>
                     )}</td>
                   </tr>

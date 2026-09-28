@@ -15,6 +15,7 @@ import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
 
 /** Order-driven shipment builder: pick ready orders, create the shipment in one go. */
 function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
+  const hideMoney = !useOps().can("orders.view_money");
   const q = useOrderList({ statuses: ["ready_for_shipment"], limit: 500, oldestFirst: true });
   const create = useCreateShipmentWithOrders({ inlineErrors: true });
   const [sel, setSel] = useState<Set<string>>(new Set());
@@ -198,9 +199,11 @@ function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
                             {r.customer_name ? `${r.customer_name}, ${r.city}` : r.city}
                           </span>
                           <span className="w-24 text-right text-muted">{r.item_count} items</span>
-                          <span className="w-32 text-right font-medium">
-                            {fmtMoney(r.cod_amount_expected, r.cod_currency)}
-                          </span>
+                          {!hideMoney && (
+                            <span className="w-32 text-right font-medium">
+                              {fmtMoney(r.cod_amount_expected, r.cod_currency)}
+                            </span>
+                          )}
                         </label>
                       </li>
                     ))}
@@ -251,7 +254,9 @@ function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
 }
 
 export function Shipments() {
-  const { isV360 } = useOps();
+  // V360 builds shipments; KBB sees the ones coming to it.
+  const { isV360, can } = useOps();
+  const hideMoney = !can("orders.view_money");
   const navigate = useNavigate();
   const [scope, setScope] = useState<"active" | "all">("active");
   const q = useShipments(scope);
@@ -268,13 +273,13 @@ export function Shipments() {
           </div>
         </>} />
 
-      {isV360 && <ShipmentBuilder onCreated={(id) => navigate(`/shipments/${id}`)} />}
+      {isV360 && can("shipments.create") && <ShipmentBuilder onCreated={(id) => navigate(`/shipments/${id}`)} />}
       <datalist id="carriers">{["DHL", "Aramex", "FedEx", "TCS International", "Leopards International", "Cargo"].map((c) => <option key={c} value={c} />)}</datalist>
 
       <div className="panel overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] text-[13.5px]">
-            <thead className="table-head"><tr><th>Shipment</th><th>Carrier</th><th>Tracking</th><th className="text-right">Orders</th><th className="text-right">Brands</th><th className="text-right">COD value</th><th>Status</th><th>Left hub</th></tr></thead>
+            <thead className="table-head"><tr><th>Shipment</th><th>Carrier</th><th>Tracking</th><th className="text-right">Orders</th><th className="text-right">Brands</th>{!hideMoney && <th className="text-right">COD value</th>}<th>Status</th><th>Left hub</th></tr></thead>
             {q.isLoading ? <SkeletonRows cols={8} rows={4} /> : (
               <tbody className="table-body">
                 {q.data!.map((s) => (
@@ -284,7 +289,7 @@ export function Shipments() {
                     <td className="text-muted">{s.tracking_number ?? "—"}</td>
                     <td className="text-right">{s.order_count}</td>
                     <td className="text-right">{s.brand_count}</td>
-                    <td className="whitespace-nowrap text-right">{fmtMoney(s.cod_expected, "BDT")}</td>
+                    {!hideMoney && <td className="whitespace-nowrap text-right">{fmtMoney(s.cod_expected, "BDT")}</td>}
                     <td><Pill {...SHIPMENT_STATUS[s.status]} /></td>
                     <td className="whitespace-nowrap text-muted">{fmtDateTime(s.dispatched_at)}</td>
                   </tr>

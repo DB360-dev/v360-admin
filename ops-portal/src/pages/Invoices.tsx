@@ -19,7 +19,10 @@ const byNewest = (a: { created_at: string }, b: { created_at: string }) =>
   new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
 
 export function Invoices() {
-  const { isV360 } = useOps();
+  const { isV360, can } = useOps();
+  const canCreate = isV360 && can("invoices.create");
+  const canPay = isV360 && can("invoices.payment_status");
+  const canDelete = can("invoices.delete");
   const shipmentsQuery = useShipments("all");
   const invoicesQuery = useInvoicesList();
   
@@ -168,7 +171,7 @@ export function Invoices() {
         title="Invoices & Payments"
         description="KBB dispatch advance & final settlement invoices, and brand shipping charges"
         actions={
-          isV360 ? (
+          canCreate ? (
             <Button variant="primary" onClick={() => setGeneratorModalOpen(true)}>
               <Plus className="h-4 w-4 mr-1.5" /> Generate Invoice
             </Button>
@@ -306,7 +309,7 @@ export function Invoices() {
                             >
                               <Printer className="h-3.5 w-3.5" />
                             </Button>
-                            {isV360 && (
+                            {canPay && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -321,7 +324,7 @@ export function Invoices() {
                                 <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
                               </Button>
                             )}
-                            {isV360 && inv.saved && (
+                            {canDelete && inv.saved && (
                               <Button size="sm" variant="ghost" onClick={() => openDelete(inv.invoice_number, "dispatch_advance")}
                                 title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}>
                                 <Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" />
@@ -431,7 +434,7 @@ export function Invoices() {
                             >
                               <Printer className="h-3.5 w-3.5" />
                             </Button>
-                            {isV360 && (
+                            {canPay && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -446,7 +449,7 @@ export function Invoices() {
                                 <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
                               </Button>
                             )}
-                            {isV360 && (
+                            {canDelete && (
                               <Button size="sm" variant="ghost" onClick={() => openDelete(inv.invoice_number, "final_settlement")}
                                 title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}>
                                 <Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" />
@@ -464,13 +467,18 @@ export function Invoices() {
         </div>
       )}
 
-      <BrandPayoutInvoicesPanel invoices={savedInvoices} search={search} paymentFilter={paymentFilter} canEdit={isV360}
-        openNumber={newBrandInvoice} onOpened={() => setNewBrandInvoice(null)}
-        onEditPayment={handleOpenEditPayment} onDelete={(n) => openDelete(n, "brand_payout")} />
-      <BrandShippingInvoicesPanel search={search} paymentFilter={paymentFilter} canEdit={isV360} />
+      {/* Brand payouts and brand shipping charges are between V360 and the brands: never shown to KBB. */}
+      {isV360 && (
+        <>
+          <BrandPayoutInvoicesPanel invoices={savedInvoices} search={search} paymentFilter={paymentFilter} canEdit={canPay} canDelete={canDelete}
+            openNumber={newBrandInvoice} onOpened={() => setNewBrandInvoice(null)}
+            onEditPayment={handleOpenEditPayment} onDelete={(n) => openDelete(n, "brand_payout")} />
+          <BrandShippingInvoicesPanel search={search} paymentFilter={paymentFilter} canEdit={canPay} canDelete={canDelete} />
+        </>
+      )}
 
       {/* Invoice Generator Selection Modal (V360 Only) */}
-      {isV360 && (
+      {canCreate && (
         <GenerateInvoiceModal
           open={generatorModalOpen}
           onClose={() => setGeneratorModalOpen(false)}
@@ -493,7 +501,7 @@ export function Invoices() {
       />
 
       {/* Edit Payment Status Modal (V360 Only) */}
-      {isV360 && (
+      {canPay && (
         <EditPaymentStatusModal
           open={editModalOpen}
           onClose={() => setEditModalOpen(false)}

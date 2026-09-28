@@ -271,7 +271,9 @@ function EditBrandSettingsDialog({ brand, open, onClose }: { brand: BrandRow; op
 }
 
 export function Brands() {
-  const { isAdmin } = useOps();
+  const { can } = useOps();
+  const canApprove = can("brands.approve");
+  const canSettings = can("brands.settings");
   const q = useBrands();
   const [tab, setTab] = useState<"pending" | "approved" | "rejected">("approved");
   const reject = useRejectBrand({ inlineErrors: true });
@@ -311,17 +313,17 @@ export function Brands() {
                       <td className="text-muted">{c?.last_synced_at ? fmtDateTime(c.last_synced_at) : "—"}</td>
                       {tab !== "approved" && <td className="max-w-[200px] truncate text-muted">{b.review_note ?? "—"}</td>}
                       <td className="whitespace-nowrap text-right">
-                        {isAdmin && tab === "approved" && (
+                        {canSettings && tab === "approved" && (
                           <Button size="sm" variant="ghost" onClick={() => setEditBrandRow(b)}>
                             <Settings className="mr-1 h-3.5 w-3.5" /> Settings
                           </Button>
                         )}
-                        {isAdmin && tab !== "approved" && (
+                        {canApprove && tab !== "approved" && (
                           <Button size="sm" variant="primary" onClick={() => setApproveBrandRow(b)}>
                             Approve
                           </Button>
                         )}
-                        {isAdmin && tab !== "rejected" && (
+                        {canApprove && tab !== "rejected" && (
                           <Button size="sm" variant="danger-ghost" className="ml-1" onClick={() => { reject.reset(); setRejectBrandRow(b); }}>
                             {tab === "approved" ? "Suspend" : "Reject"}
                           </Button>
@@ -340,7 +342,7 @@ export function Brands() {
             {tab === "pending" ? "Brands that register on the brand portal appear here for approval." : undefined}
           </EmptyState>
         )}
-        {!isAdmin && <p className="border-t border-line px-4 py-2 text-[12.5px] text-faint">Only V360 admins can approve or reject brands.</p>}
+        {!canApprove && <p className="border-t border-line px-4 py-2 text-[12.5px] text-faint">Your role can't approve or reject brands.</p>}
       </div>
 
       {approveBrandRow && (

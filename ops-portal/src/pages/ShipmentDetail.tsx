@@ -141,7 +141,7 @@ const orderUnits = (items: OrderItem[]) => ({
 const PAYMENT_LABEL = { not_paid: "Unpaid", partially_paid: "Partially paid", paid: "Paid" } as const;
 
 function BrandFreightSection({ shipment }: { shipment: ShipmentOverview }) {
-  const { isV360 } = useOps();
+  const { can } = useOps();
   const orders = useShipmentFreightOrders(shipment.id);
   const money = useMoneySettings();
   const fx = useFxRates();
@@ -210,7 +210,7 @@ function BrandFreightSection({ shipment }: { shipment: ShipmentOverview }) {
         <p className="mt-3 text-[12px] text-faint">Estimate at {rate} BDT/kg × FX {bdtPkr}. The final rate is fixed on dispatch.</p>
       )}
       {!dispatched && rate === null && <p className="mt-3 text-[12px] text-g-problem">Set the BDT freight rate in Money settings before dispatch.</p>}
-      {isV360 && dispatched && (
+      {can("invoices.recalculate") && dispatched && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button size="sm" loading={regenerate.isPending} onClick={() => regenerate.mutate(shipment.id)}>
             {missingInvoices ? "Create missing invoices" : "Recalculate invoices"}
@@ -234,6 +234,7 @@ type ReadyOrder = {
 const fmtKg = (w: number | undefined | null) => (w === null || w === undefined || Number.isNaN(w) ? "—" : `${Number(w.toFixed(2))} kg`);
 
 function AddOrdersDialog({ shipment, open, onClose }: { shipment: ShipmentOverview; open: boolean; onClose: () => void }) {
+  const hideMoney = !useOps().can("orders.view_money");
   const q = useQuery({
     queryKey: ["ops", "ready-orders", open],
     enabled: open,
@@ -314,7 +315,7 @@ function AddOrdersDialog({ shipment, open, onClose }: { shipment: ShipmentOvervi
                           <span className="ml-auto flex items-center gap-3">
                             <span className="hidden w-20 truncate text-muted sm:block">{r.customer_name}, {r.city}</span>
                             <span className="w-16 text-right">{fmtKg(w)}</span>
-                            <span className="w-24 text-right">{fmtMoney(r.cod_amount_expected, r.cod_currency)}</span>
+                            {!hideMoney && <span className="w-24 text-right">{fmtMoney(r.cod_amount_expected, r.cod_currency)}</span>}
                           </span>
                         </label>
                       </li>
@@ -617,7 +618,9 @@ function BdReceivingSection({ shipment, canOverride }: { shipment: ShipmentOverv
 
 export function ShipmentDetail() {
   const { id = "" } = useParams();
-  const { isV360, isKbb } = useOps();
+  const { isV360, isKbb, can } = useOps();
+  const hideMoney = !can("orders.view_money");
+  const canPack = can("shipments.edit_orders");
   const q = useShipment(id);
   const orders = useOrderList({ statuses: null, shipmentId: id, limit: 500 });
   const events = useShipmentEvents(id);
@@ -635,7 +638,7 @@ export function ShipmentDetail() {
   const s = q.data;
   const next = s ? nextV360ShipmentStatus(s.status) : null;
   const packing = !!s && (s.status === "draft" || s.status === "ready_for_dispatch");
-  const kbbCanReceive = !!s && isKbb && s.status === "arrived_bd";
+  const kbbCanReceive = !!s && isKbb && can("shipments.receive") && s.status === "arrived_bd";
   const target = isKbb ? "received_by_partner" : next;
   const blocker = useMemo(() => {
     if (!s || !target) return null;
@@ -655,14 +658,16 @@ export function ShipmentDetail() {
       <header className="mb-4 flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3"><h1>{s.code}</h1><Pill {...SHIPMENT_STATUS[s.status]} /></div>
-          <p className="mt-1 text-[14px] text-muted">{plural(s.order_count, "order")} from {plural(s.brand_count, "brand")}, {fmtMoney(s.cod_expected, "BDT")} to collect</p>
+          <p className="mt-1 text-[14px] text-muted">{plural(s.order_count, "order")} from {plural(s.brand_count, "brand")}{hideMoney ? "" : `, ${fmtMoney(s.cod_expected, "BDT")} to collect`}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => setShowKbbInvoice(true)}>
-            <FileText className="h-4 w-4" /> KBB Invoice PDF
-          </Button>
-          {isV360 && packing && <Button onClick={() => setAdding(true)}><PackagePlus className="h-4 w-4" /> Add orders</Button>}
-          {((isV360 && next && s.status !== "arrived_bd") || kbbCanReceive) && target && (
+          {can("invoices.view") && (
+            <Button onClick={() => setShowKbbInvoice(true)}>
+              <FileText className="h-4 w-4" /> KBB Invoice PDF
+            </Button>
+          )}
+          {canPack && packing && <Button onClick={() => setAdding(true)}><PackagePlus className="h-4 w-4" /> Add orders</Button>}
+          {((isV360 && can("shipments.update_status") && next && s.status !== "arrived_bd") || kbbCanReceive) && target && (
             <Button variant="primary" onClick={() => { move.reset(); setMoving(true); }}>
               {isKbb ? "Mark as received by kbb" : `Mark as ${SHIPMENT_STATUS[target].label.toLowerCase()}`}
             </Button>
@@ -675,13 +680,13 @@ export function ShipmentDetail() {
         <div className="min-w-0 space-y-6">
           <Section title="Orders in this shipment">
             {orders.isLoading ? <Spinner /> : orders.isError ? <ErrorState error={orders.error} onRetry={() => orders.refetch()} /> : orders.data!.rows.length === 0 ? (
-              <EmptyState title="Empty shipment" action={isV360 && packing ? <Button variant="primary" onClick={() => setAdding(true)}>Add orders</Button> : undefined}>
+              <EmptyState title="Empty shipment" action={canPack && packing ? <Button variant="primary" onClick={() => setAdding(true)}>Add orders</Button> : undefined}>
                 Add orders that are ready for shipment.
               </EmptyState>
             ) : (
               <div className="-m-4 overflow-x-auto">
                 <table className="w-full min-w-[640px] text-[13.5px]">
-                  <thead className="table-head"><tr><th>Order</th><th>Brand</th><th>Customer</th><th className="text-right">Items</th><th className="text-right">COD</th><th>Status</th>{isV360 && packing && <th />}</tr></thead>
+                  <thead className="table-head"><tr><th>Order</th><th>Brand</th><th>Customer</th><th className="text-right">Items</th>{!hideMoney && <th className="text-right">COD</th>}<th>Status</th>{canPack && packing && <th />}</tr></thead>
                   <tbody className="table-body">
                     {orders.data!.rows.map((o) => (
                       <tr key={o.id}>
@@ -689,9 +694,9 @@ export function ShipmentDetail() {
                         <td>{o.brand_name}</td>
                         <td><div className="max-w-[180px] truncate">{o.customer_name}</div><div className="text-[12.5px] text-faint">{o.city}</div></td>
                         <td className="text-right"><ItemsCell units={unitsByOrder.get(o.id)} fallback={o.item_count} /></td>
-                        <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>
+                        {!hideMoney && <td className="whitespace-nowrap text-right">{fmtMoney(o.cod_amount_expected, o.cod_currency)}</td>}
                         <td><StatusBadge status={o.status} discrepancy={o.returned_due_to_discrepancy} /></td>
-                        {isV360 && packing && <td className="text-right"><Button size="sm" variant="ghost" onClick={() => { remove.reset(); setRemoving(o); }}>Remove</Button></td>}
+                        {canPack && packing && <td className="text-right"><Button size="sm" variant="ghost" onClick={() => { remove.reset(); setRemoving(o); }}>Remove</Button></td>}
                       </tr>
                     ))}
                   </tbody>
@@ -699,11 +704,11 @@ export function ShipmentDetail() {
               </div>
             )}
           </Section>
-          {s.status === "arrived_bd" && <BdReceivingSection shipment={s} canOverride={isV360} />}
+          {s.status === "arrived_bd" && can("bd.receive") && <BdReceivingSection shipment={s} canOverride={can("discrepancies.override")} />}
         </div>
         <aside className="space-y-6">
-          <Section title="Details"><DetailsForm s={s} editable={isV360 && s.status !== "received_by_partner"} /></Section>
-          {isV360 && (
+          <Section title="Details"><DetailsForm s={s} editable={can("shipments.edit_details") && s.status !== "received_by_partner"} /></Section>
+          {isV360 && can("invoices.view") && (
             <Section title="Brand weights & shipping charges">
               <BrandFreightSection shipment={s} />
             </Section>
@@ -724,12 +729,12 @@ export function ShipmentDetail() {
         </aside>
       </div>
 
-      {isV360 && <AddOrdersDialog shipment={s} open={adding} onClose={() => setAdding(false)} />}
+      {canPack && <AddOrdersDialog shipment={s} open={adding} onClose={() => setAdding(false)} />}
       {target && (
         <ActionDialog open={moving} onClose={() => setMoving(false)} busy={move.isPending} error={move.error ? describeError(move.error) : null}
           title={isKbb ? `Confirm KBB received ${s.code}` : `${s.code}: ${SHIPMENT_STATUS[target].label}`}
           description={isKbb ? `All ${plural(s.order_count, "order")} inside become "Received by KBB" and move to Deliveries.`
-            : target === "handed_to_carrier" ? "The shipment leaves the hub. Its orders can no longer be changed, and a shipping-charges invoice is created for each brand." : "Every order in the shipment updates with it."}
+            : target === "handed_to_carrier" ? `The shipment leaves the hub. Its orders can no longer be changed${!can("invoices.view") ? "." : ", and a shipping-charges invoice is created for each brand."}` : "Every order in the shipment updates with it."}
           confirmLabel={isKbb ? "Confirm receipt" : "Update shipment"} noteLabel="Note"
           validate={() => blocker} onConfirm={(n) => move.mutate({ id: s.id, to: target, note: n }, { onSuccess: () => setMoving(false) })} />
       )}
@@ -738,7 +743,7 @@ export function ShipmentDetail() {
           title={`Remove ${removing.order_number}?`} description="It goes back to ready for shipment." confirmLabel="Remove" noteLabel="Reason"
           onConfirm={(n) => remove.mutate({ orderId: removing.id, note: n }, { onSuccess: () => setRemoving(null) })} />
       )}
-      <KbbInvoiceDialog open={showKbbInvoice} onClose={() => setShowKbbInvoice(false)} shipment={s} />
+      {can("invoices.view") && <KbbInvoiceDialog open={showKbbInvoice} onClose={() => setShowKbbInvoice(false)} shipment={s} />}
     </>
   );
 }

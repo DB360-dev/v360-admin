@@ -9,7 +9,7 @@ export type ShipmentStatus =
 
 export type InboundStatus = "in_transit" | "received" | "issue";
 export type FulfilmentOrigin = "pakistan" | "bangladesh";
-export type MemberRole = "admin" | "operator" | "partner_agent" | "brand_owner" | "brand_staff";
+export type MemberRole = "admin" | "operator" | "warehouse" | "partner_agent" | "brand_owner" | "brand_staff";
 export type OrgType = "v360" | "partner" | "brand";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";
@@ -182,8 +182,24 @@ export interface ShipmentEvent {
   to_status: ShipmentStatus | null; note: string | null; created_at: string;
 }
 
+/** One entry in the permission catalog (permissions table). */
+export interface PermissionDef {
+  key: string; area: string; label: string; description: string | null;
+  applies_to: ("v360" | "partner" | "brand")[]; sort: number;
+}
+
+/** A custom role, owned by one organization (V360, KBB or a brand). */
+export interface RoleRow {
+  id: string; organization_id: string; org_type: "v360" | "partner" | "brand"; name: string; description: string | null; is_preset: boolean;
+  role_permissions: { permission: string }[];
+  /** Filled in by useRoles. */
+  member_count: number;
+}
+
 export interface TeamMember {
   membership_id: string; user_id: string; role: MemberRole; created_at: string;
+  /** Custom role (V360 non-admins and KBB). Filled in by useTeam. */
+  role_id: string | null;
   full_name: string | null; email: string | null; phone: string | null;
   organization_id: string; organization_name: string; organization_type: OrgType;
 }

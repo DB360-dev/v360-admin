@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Printer } from "lucide-react";
+import { useOps } from "@/context/OpsContext";
 import { useBrandOptions, useCreateSettlement, useMarkSettlementPaid, useMoneySettings, useRecordKbbPayment, useSettlements, useShipments } from "@/hooks/useData";
 import { describeError } from "@/lib/errors";
 import { fmtDate, fmtDateTime, fmtMoney } from "@/lib/format";
@@ -104,6 +105,7 @@ export function StatementDialog({ settlementId, open, onClose }: {
 }) {
   const q = useSettlements();
   const paid = useMarkSettlementPaid({ inlineErrors: true });
+  const canMarkPaid = useOps().can("money.statements");
   const settings = useMoneySettings();
   const s = open ? (q.data ?? []).find((x) => x.id === settlementId) ?? null : null;
 
@@ -124,7 +126,7 @@ export function StatementDialog({ settlementId, open, onClose }: {
         : "All outstanding delivered orders"}
       footer={<>
         <Button onClick={onClose}>Close</Button>
-        {s.status === "issued" && (
+        {canMarkPaid && s.status === "issued" && (
           <Button variant="primary" loading={paid.isPending}
             onClick={() => paid.mutate(s.id)}>Mark as paid</Button>
         )}
