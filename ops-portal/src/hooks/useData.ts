@@ -961,6 +961,13 @@ export const useAddFxRate = (o?: ActionOptions) => useOpsAction(
     if (error) throw error;
   }, "Rate saved", o);
 
+/** Fetch today's BDT rate from open.er-api.com into fx_rates (sync_fx_rates, migration 056). */
+export const useSyncFxRates = (o?: ActionOptions) => useOpsAction(
+  () => rpc<{ rate_date: string; bdt_to_pkr: number; saved: string[]; kept_manual: string[] }>("sync_fx_rates", {}),
+  (r) => r?.kept_manual?.length && !r.saved?.length
+    ? `Kept your own rate for ${r.rate_date} (the service says 1 BDT = ${r.bdt_to_pkr} PKR)`
+    : `Rate for ${r?.rate_date}: 1 BDT = ${r?.bdt_to_pkr} PKR`, o);
+
 export const useReplayWebhook = (o?: ActionOptions) => useOpsAction(
   (webhookId: string) => rpc<{ action?: string; reason?: string }>("replay_webhook", { p_webhook_id: webhookId }),
   (r) => (r?.action === "error" ? `Replayed, but it failed again: ${r.reason}` : `Replayed: ${r?.action ?? "done"}`), o);
