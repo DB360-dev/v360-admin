@@ -2,7 +2,8 @@ import { useCallback, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { NOTE_REQUIRED, STATUS, TERMINAL } from "@/lib/status";
 import type { OrderStatus, StatusTransition } from "@/lib/types";
-import { useOps } from "@/context/OpsContext";
+import { useOps, type OpsRole } from "@/context/OpsContext";
+import type { Perm } from "@/lib/permissions";
 import { useBulkOrderAction, useTransitions, type BulkOpsAction } from "@/hooks/useData";
 import { plural } from "@/lib/format";
 import { Button } from "./ui/Button";
@@ -18,38 +19,38 @@ const NOT_BULK: OrderStatus[] = ["out_for_delivery"];
 type Item = { key: string; label: string; action: BulkOpsAction; danger: boolean };
 
 /** Bulk options for one order, mirroring the order page's status buttons plus Hold / Resume. */
-export function bulkItemsFor(t: StatusTransition[], status: OrderStatus, isV360: boolean): Item[] {
+export function bulkItemsFor(t: StatusTransition[], status: OrderStatus, role: OpsRole | null, can: (p: Perm) => boolean): Item[] {
   const items: Item[] = [];
-  if (status === "hold") items.push({ key: "resume", label: "Resume", action: { kind: "resume" }, danger: false });
-  for (const to of availableTransitions(t, status, isV360)) {
+  if (status === "hold" && can("orders.hold")) items.push({ key: "resume", label: "Resume", action: { kind: "resume" }, danger: false });
+  for (const to of availableTransitions(t, status, role, can)) {
     if (NOT_BULK.includes(to)) continue;
     items.push({ key: to, label: VERB[to] ?? STATUS[to].label, action: { kind: "status", to }, danger: DANGER.includes(to) });
   }
-  if (status !== "hold" && !TERMINAL.includes(status)) items.push({ key: "hold", label: "Hold", action: { kind: "hold" }, danger: false });
+  if (status !== "hold" && !TERMINAL.includes(status) && can("orders.hold")) items.push({ key: "hold", label: "Hold", action: { kind: "hold" }, danger: false });
   return items.sort((a, b) => Number(a.danger) - Number(b.danger));
 }
 
 /** Items every selected order allows, in a stable order. */
-function commonItems(t: StatusTransition[], statuses: OrderStatus[], isV360: boolean): Item[] {
+function commonItems(t: StatusTransition[], statuses: OrderStatus[], role: OpsRole | null, can: (p: Perm) => boolean): Item[] {
   if (statuses.length === 0) return [];
-  const [first, ...rest] = [...new Set(statuses)].map((s) => bulkItemsFor(t, s, isV360));
+  const [first, ...rest] = [...new Set(statuses)].map((s) => bulkItemsFor(t, s, role, can));
   return first.filter((a) => rest.every((list) => list.some((b) => b.key === a.key)));
 }
 
 /** Hook for pages: which statuses can be ticked for bulk actions. */
 export function useBulkSelectable() {
-  const { isV360 } = useOps();
+  const { role, can } = useOps();
   const t = useTransitions().data ?? [];
-  return useCallback((status: OrderStatus) => bulkItemsFor(t, status, isV360).length > 0, [t, isV360]);
+  return useCallback((status: OrderStatus) => bulkItemsFor(t, status, role, can).length > 0, [t, role, can]);
 }
 
 export function BulkOrderActions({ orders, onDone }: { orders: { id: string; status: OrderStatus }[]; onDone: () => void }) {
-  const { isV360 } = useOps();
+  const { role, can } = useOps();
   const t = useTransitions().data ?? [];
   const bulk = useBulkOrderAction();
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<Item | null>(null);
-  const items = commonItems(t, orders.map((o) => o.status), isV360);
+  const items = commonItems(t, orders.map((o) => o.status), role, can);
   const count = plural(orders.length, "order");
 
   const noteRequired = picked ? picked.action.kind === "hold" || (picked.action.kind === "status" && NOTE_REQUIRED.includes(picked.action.to)) : false;

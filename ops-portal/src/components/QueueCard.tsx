@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useOps } from "@/context/OpsContext";
 import type { QueueOrder } from "@/hooks/useData";
 import { fmtMoney, fmtShort, since, daysSince } from "@/lib/format";
 import { Pill, StatusBadge } from "./ui/StatusBadge";
@@ -8,6 +9,7 @@ import { ContactLinks } from "@/pages/OrderDetail";
 
 /** One order in a work queue: everything needed to act without opening it. */
 export function QueueCard({ o, showItems = true, showDateAndMaster = false }: { o: QueueOrder; showItems?: boolean; showDateAndMaster?: boolean }) {
+  const showMoney = useOps().can("orders.view_money");
   const waited = daysSince(o.status_changed_at);
   const items = o.order_items.reduce((n, i) => n + i.quantity, 0);
   return (
@@ -35,10 +37,12 @@ export function QueueCard({ o, showItems = true, showDateAndMaster = false }: { 
             {o.order_items.length > 4 && <li className="text-muted">+{o.order_items.length - 4} more lines</li>}
           </ul>
         ) : <div className="text-muted">{items} item{items === 1 ? "" : "s"}{o.delivery_tracking_number ? `, ${o.delivery_courier} ${o.delivery_tracking_number}` : ""}</div>}
-        <div className="sm:text-right">
-          <div className="text-[12.5px] text-muted">Cash to collect</div>
-          <div className="text-[16px] font-semibold">{fmtMoney(o.cod_amount_expected, o.cod_currency ?? "BDT")}</div>
-        </div>
+        {showMoney && (
+          <div className="sm:text-right">
+            <div className="text-[12.5px] text-muted">Cash to collect</div>
+            <div className="text-[16px] font-semibold">{fmtMoney(o.cod_amount_expected, o.cod_currency ?? "BDT")}</div>
+          </div>
+        )}
       </div>
       <div className="border-t border-line bg-sunken/40 px-4 py-2.5"><OrderActions order={o} compact /></div>
     </li>

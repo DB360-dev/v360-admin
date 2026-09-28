@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Coins } from "lucide-react";
+import { useOps } from "@/context/OpsContext";
 import { useAddFxRate, useFxRates } from "@/hooks/useData";
 import { fmtDate, fmtDateTime, todayISO } from "@/lib/format";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -8,6 +9,7 @@ import { TextField } from "@/components/ui/Field";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
 
 export function FxRates() {
+  const canManage = useOps().can("fx.manage");
   const q = useFxRates();
   const add = useAddFxRate();
   const [v, setV] = useState({ date: todayISO(), base: "BDT", quote: "PKR", rate: "", note: "" });
@@ -31,14 +33,14 @@ export function FxRates() {
     <>
       <PageHeader title="FX rates" description="Enter the day's rate manually. Settlements will use the rate for the day they're made; saving the same date again replaces it." />
       {stale && <p className="mb-4 rounded-lg border border-g-brand/30 bg-g-brand-bg px-4 py-2.5 text-[13.5px] text-g-brand">No BDT to PKR rate entered for today. The last one is from {fmtDate(latest.rate_date)}.</p>}
-      <form onSubmit={submit} noValidate className="panel mb-6 grid items-start gap-4 p-4 sm:grid-cols-[150px_90px_90px_150px_1fr_auto]">
+      {canManage && <form onSubmit={submit} noValidate className="panel mb-6 grid items-start gap-4 p-4 sm:grid-cols-[150px_90px_90px_150px_1fr_auto]">
         <TextField label="Date" type="date" max={todayISO()} value={v.date} onChange={(e) => setV({ ...v, date: e.target.value })} error={errs.date} />
         <TextField label="From" value={v.base} maxLength={3} onChange={(e) => setV({ ...v, base: e.target.value.toUpperCase() })} error={errs.base} />
         <TextField label="To" value={v.quote} maxLength={3} onChange={(e) => setV({ ...v, quote: e.target.value.toUpperCase() })} error={errs.quote} />
         <TextField label={`1 ${v.base || "…"} =`} inputMode="decimal" placeholder="e.g. 2.31" value={v.rate} onChange={(e) => setV({ ...v, rate: e.target.value })} error={errs.rate} />
         <TextField label="Source / note" optional value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} placeholder="e.g. Bank rate" />
         <Button type="submit" variant="primary" loading={add.isPending} className="sm:mt-[26px]">Save rate</Button>
-      </form>
+      </form>}
       <div className="panel overflow-hidden">
         <table className="w-full text-[13.5px]">
           <thead className="table-head"><tr><th>Date</th><th>Pair</th><th className="text-right">Rate</th><th>Note</th><th>Entered</th></tr></thead>

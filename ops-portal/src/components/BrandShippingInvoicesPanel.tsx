@@ -17,7 +17,7 @@ const STATUS_STYLE: Record<InvoicePaymentStatus, string> = {
 const STATUS_LABEL: Record<InvoicePaymentStatus, string> = { paid: "Paid", partially_paid: "Partially Paid", not_paid: "Unpaid" };
 
 /** Brand shipping-charges invoices (one per brand per shipment, Pakistan-fulfilled units only). */
-export function BrandShippingInvoicesPanel({ search, paymentFilter, canEdit }: { search: string; paymentFilter: string; canEdit: boolean }) {
+export function BrandShippingInvoicesPanel({ search, paymentFilter, canEdit, canDelete }: { search: string; paymentFilter: string; canEdit: boolean; canDelete: boolean }) {
   const q = useBrandShippingInvoices();
   const setStatus = useSetShippingInvoicePaymentStatus();
   const [viewing, setViewing] = useState<BrandShippingInvoice | null>(null);
@@ -78,7 +78,7 @@ export function BrandShippingInvoicesPanel({ search, paymentFilter, canEdit }: {
                   <td className="text-right">
                     <div className="flex items-center justify-end gap-1">
                       <Button size="sm" variant="secondary" onClick={() => setViewing(inv)} title="View / print"><Printer className="h-3.5 w-3.5" /></Button>
-                      {canEdit && <Button size="sm" variant="ghost" onClick={() => { del.reset(); setDeleting(inv); }} title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}><Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" /></Button>}
+                      {canDelete && <Button size="sm" variant="ghost" onClick={() => { del.reset(); setDeleting(inv); }} title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}><Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" /></Button>}
                     </div>
                   </td>
                 </tr>

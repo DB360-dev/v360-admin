@@ -14,8 +14,8 @@ const STATUS_STYLE: Record<InvoicePaymentStatus, string> = {
 const STATUS_LABEL: Record<InvoicePaymentStatus, string> = { paid: "Paid", partially_paid: "Partially Paid", not_paid: "Unpaid" };
 
 /** Brand payout invoices (V360 → brand), newest first. */
-export function BrandPayoutInvoicesPanel({ invoices, search, paymentFilter, canEdit, openNumber, onOpened, onEditPayment, onDelete }: {
-  invoices: InvoiceRecord[]; search: string; paymentFilter: string; canEdit: boolean;
+export function BrandPayoutInvoicesPanel({ invoices, search, paymentFilter, canEdit, canDelete, openNumber, onOpened, onEditPayment, onDelete }: {
+  invoices: InvoiceRecord[]; search: string; paymentFilter: string; canEdit: boolean; canDelete: boolean;
   /** Open this invoice once it's loaded (e.g. just created). */
   openNumber?: string | null; onOpened?: () => void;
   onEditPayment: (number: string, status: InvoicePaymentStatus) => void;
@@ -73,14 +73,14 @@ export function BrandPayoutInvoicesPanel({ invoices, search, paymentFilter, canE
                     <div className="flex items-center justify-end gap-1">
                       <Button size="sm" variant="secondary" onClick={() => setViewing(inv)} title="View / print"><Printer className="h-3.5 w-3.5" /></Button>
                       {canEdit && (
-                        <>
-                          <Button size="sm" variant="ghost" onClick={() => onEditPayment(inv.invoice_number, inv.payment_status)} title="Edit Payment Status">
-                            <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
-                          </Button>
-                          <Button size="sm" variant="ghost" onClick={() => onDelete(inv.invoice_number)} title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}>
-                            <Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" />
-                          </Button>
-                        </>
+                        <Button size="sm" variant="ghost" onClick={() => onEditPayment(inv.invoice_number, inv.payment_status)} title="Edit Payment Status">
+                          <Pencil className="h-3.5 w-3.5 text-muted hover:text-ink" />
+                        </Button>
+                      )}
+                      {canDelete && (
+                        <Button size="sm" variant="ghost" onClick={() => onDelete(inv.invoice_number)} title="Delete invoice" aria-label={`Delete ${inv.invoice_number}`}>
+                          <Trash2 className="h-3.5 w-3.5 text-muted hover:text-g-problem" />
+                        </Button>
                       )}
                     </div>
                   </td>

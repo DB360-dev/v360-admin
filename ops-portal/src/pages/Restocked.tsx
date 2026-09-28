@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Archive, PackageCheck, Truck } from "lucide-react";
+import { useOps } from "@/context/OpsContext";
 import { useDispatchedItems, useInventoryOrders, useRestockedItems } from "@/hooks/useData";
 import { fmtMoney, fmtShort } from "@/lib/format";
 import { STATUS } from "@/lib/status";
@@ -9,6 +10,7 @@ import { Pill } from "@/components/ui/StatusBadge";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
 
 function DispatchedTable() {
+  const hideMoney = !useOps().can("orders.view_money");
   const q = useDispatchedItems();
   const rows = q.data ?? [];
   return (
@@ -21,12 +23,12 @@ function DispatchedTable() {
             <th>Customer</th>
             <th>Status</th>
             <th className="text-right">Qty</th>
-            <th className="text-right">Line total</th>
+            {!hideMoney && <th className="text-right">Line total</th>}
             <th>Dispatched</th>
             <th>Shipment</th>
           </tr>
         </thead>
-        {q.isLoading ? <SkeletonRows cols={8} /> : (
+        {q.isLoading ? <SkeletonRows cols={hideMoney ? 7 : 8} /> : (
           <tbody className="table-body">
             {rows.map((r) => (
               <tr key={r.order_item_id}>
@@ -51,7 +53,7 @@ function DispatchedTable() {
                     : <span className="text-faint">{r.status}</span>}
                 </td>
                 <td className="text-right">{r.quantity}</td>
-                <td className="text-right whitespace-nowrap">{fmtMoney(r.line_total, r.currency)}</td>
+                {!hideMoney && <td className="text-right whitespace-nowrap">{fmtMoney(r.line_total, r.currency)}</td>}
                 <td className="whitespace-nowrap text-muted">{fmtShort(r.dispatched_at)}</td>
                 <td>
                   {r.shipment_code
@@ -68,6 +70,7 @@ function DispatchedTable() {
 }
 
 function StockTable() {
+  const hideMoney = !useOps().can("orders.view_money");
   const q = useRestockedItems();
   const rows = q.data ?? [];
   return (
@@ -80,14 +83,14 @@ function StockTable() {
             <th>Customer</th>
             <th className="text-right">Qty</th>
             <th className="text-right">Available</th>
-            <th className="text-right">Line total</th>
+            {!hideMoney && <th className="text-right">Line total</th>}
             <th>Returned</th>
             <th>Restocked</th>
             <th>Shipment</th>
             <th>Note</th>
           </tr>
         </thead>
-        {q.isLoading ? <SkeletonRows cols={10} /> : (
+        {q.isLoading ? <SkeletonRows cols={hideMoney ? 9 : 10} /> : (
           <tbody className="table-body">
             {rows.map((r) => (
               <tr key={r.order_item_id}>
@@ -112,7 +115,7 @@ function StockTable() {
                     {r.available_qty ?? r.quantity}
                   </span>
                 </td>
-                <td className="text-right whitespace-nowrap">{fmtMoney(r.line_total, r.currency)}</td>
+                {!hideMoney && <td className="text-right whitespace-nowrap">{fmtMoney(r.line_total, r.currency)}</td>}
                 <td className="whitespace-nowrap text-muted">{fmtShort(r.returned_at)}</td>
                 <td className="whitespace-nowrap text-muted">
                   {r.restocked_at ? fmtShort(r.restocked_at) : <span className="text-faint">—</span>}

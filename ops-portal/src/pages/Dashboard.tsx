@@ -61,9 +61,9 @@ function Payments() {
 }
 
 export function Dashboard() {
-  const { isV360, orgName } = useOps();
+  const { role, isV360, can, orgName } = useOps();
   const counts = useStatusCounts();
-  const dash = useDashboardCounts(isV360);
+  const dash = useDashboardCounts(role);
   const c = counts.data;
   const sum = (ss: OrderStatus[] | null) => (c ? (ss ?? (Object.keys(c) as OrderStatus[])).reduce((n, s) => n + (c[s] ?? 0), 0) : undefined);
   const d = dash.data;
@@ -75,9 +75,9 @@ export function Dashboard() {
       <>
         <PageHeader title="Today" description={`${orgName}: your confirmation calls, incoming shipments and deliveries.`} />
         <div className="grid gap-3 sm:grid-cols-3">
-          <Tile label="Orders to confirm" value={sum(CONFIRM_QUEUE)} to="/confirmations" tone="attention" sub="Call the customer" />
-          <Tile label="Shipments on the way" value={d?.shipmentsMoving} to="/shipments" sub="Confirm receipt when they arrive" />
-          <Tile label="Orders to deliver" value={sum(DELIVERY_QUEUE)} to="/deliveries" tone="attention" sub="Includes failed attempts" />
+          {can("confirmations.view") && <Tile label="Orders to confirm" value={sum(CONFIRM_QUEUE)} to="/confirmations" tone="attention" sub="Call the customer" />}
+          {can("shipments.view") && <Tile label="Shipments on the way" value={d?.shipmentsMoving} to="/shipments" sub="Confirm receipt when they arrive" />}
+          {can("deliveries.view") && <Tile label="Orders to deliver" value={sum(DELIVERY_QUEUE)} to="/deliveries" tone="attention" sub="Includes failed attempts" />}
         </div>
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
           <Ageing title="Waiting too long" statuses={[...CONFIRM_QUEUE, ...DELIVERY_QUEUE]} />
@@ -91,34 +91,44 @@ export function Dashboard() {
   return (
     <>
       <PageHeader title="Dashboard" description="Every brand's Bangladesh orders, live." />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
-        {views.map((v) => (
-          <Tile key={v.key} label={v.label} value={sum(v.statuses)} to={`/orders?view=${v.key}`} tone={v.key === "problem" ? "problem" : undefined} />
-        ))}
-      </div>
-      <h2 className="mb-3 mt-7">Master status</h2>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
-        {track.map((step) => {
-          const n = c ? (c[step.status] ?? 0) : undefined;
-          return (
-            <Link key={step.status} to={`/orders?view=${step.status}`} className="flex items-center gap-2 rounded border border-line px-2.5 py-2 hover:border-faint">
-              <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS[step.status] ? GROUP_CLASSES[STATUS[step.status].group].dot : "bg-faint"}`} aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-[13px]">{step.label}</span>
-              <span className={`text-[14px] font-semibold ${n === undefined ? "text-faint" : n > 0 ? "text-ink" : "text-faint"}`}>{n ?? "–"}</span>
-            </Link>
-          );
-        })}
-      </div>
+      {can("orders.view") && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+          {views.map((v) => (
+            <Tile key={v.key} label={v.label} value={sum(v.statuses)} to={`/orders?view=${v.key}`} tone={v.key === "problem" ? "problem" : undefined} />
+          ))}
+        </div>
+      )}
+      {can("orders.view") && (
+        <>
+          <h2 className="mb-3 mt-7">Master status</h2>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+            {track.map((step) => {
+              const n = c ? (c[step.status] ?? 0) : undefined;
+              return (
+                <Link key={step.status} to={`/orders?view=${step.status}`} className="flex items-center gap-2 rounded border border-line px-2.5 py-2 hover:border-faint">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS[step.status] ? GROUP_CLASSES[STATUS[step.status].group].dot : "bg-faint"}`} aria-hidden />
+                  <span className="min-w-0 flex-1 truncate text-[13px]">{step.label}</span>
+                  <span className={`text-[14px] font-semibold ${n === undefined ? "text-faint" : n > 0 ? "text-ink" : "text-faint"}`}>{n ?? "–"}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </>
+      )}
       <h2 className="mb-3 mt-7">Your queues</h2>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Tile label="Parcels to receive" value={d?.parcelsAwaiting} to="/receiving" tone="attention" sub="From brands, incl. mismatches" />
-        <Tile label="Ready for shipment" value={c ? c.ready_for_shipment ?? 0 : undefined} to="/shipments" tone="attention"
-          sub={d?.draftShipments ? `${d.draftShipments} shipment${d.draftShipments > 1 ? "s" : ""} being packed` : "Not in a shipment yet"} />
-        <Tile label="Brand requests" value={d?.pendingBrands} to="/brands" tone="attention" sub="Waiting for approval" />
-        <Tile label="Shopify sync errors" value={d?.failedWebhooks} to="/webhooks" tone="problem" sub="Orders that failed to import" />
+        {can("hub.view") && <Tile label="Parcels to receive" value={d?.parcelsAwaiting} to="/receiving" tone="attention" sub="From brands, incl. mismatches" />}
+        {can("shipments.view") && <Tile label="Ready for shipment" value={c ? c.ready_for_shipment ?? 0 : undefined} to="/shipments" tone="attention"
+          sub={d?.draftShipments ? `${d.draftShipments} shipment${d.draftShipments > 1 ? "s" : ""} being packed` : "Not in a shipment yet"} />}
+        {can("brands.view") && <Tile label="Brand requests" value={d?.pendingBrands} to="/brands" tone="attention" sub="Waiting for approval" />}
+        {can("webhooks.view") && <Tile label="Shopify sync errors" value={d?.failedWebhooks} to="/webhooks" tone="problem" sub="Orders that failed to import" />}
       </div>
-      <h2 className="mb-3 mt-7">Payments</h2>
-      <Payments />
+      {can("invoices.view") && (
+        <>
+          <h2 className="mb-3 mt-7">Payments</h2>
+          <Payments />
+        </>
+      )}
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Ageing title="Stuck orders" />
       </div>

@@ -202,7 +202,8 @@ export function OrderDetail() {
   const q = useOrder(id);
   const ev = useOrderEvents(id);
   const msgs = useOrderMessages(id);
-  const { isV360, isAdmin, isKbb } = useOps();
+  const { isV360, isKbb, can } = useOps();
+  const hideMoney = !can("orders.view_money");
   const [tab, setTab] = useState<"messages" | "timeline">("messages");
 
   if (q.isLoading) return <Spinner label="Loading order" />;
@@ -234,14 +235,14 @@ export function OrderDetail() {
           <Section title="Items">
             <div className="-m-4 overflow-x-auto">
               <table className="w-full min-w-[520px] text-[13.5px]">
-                <thead className="table-head"><tr><th>Product</th><th>SKU</th><th className="text-right">Qty</th><th className="text-right">Price</th>{hubSeen && <th className="text-right">At hub</th>}</tr></thead>
+                <thead className="table-head"><tr><th>Product</th><th>SKU</th><th className="text-right">Qty</th>{!hideMoney && <th className="text-right">Price</th>}{hubSeen && <th className="text-right">At hub</th>}</tr></thead>
                 <tbody className="table-body">
                   {o.order_items.map((i) => (
                     <tr key={i.id}>
                       <td><div className="font-medium">{i.product_name}</div>{i.variant && <div className="text-[12.5px] text-muted">{i.variant}</div>}</td>
                       <td className="text-muted">{i.sku ?? "—"}</td>
                       <td className="text-right">{i.quantity}</td>
-                      <td className="whitespace-nowrap text-right">{fmtMoney(i.unit_price, o.currency)}</td>
+                      {!hideMoney && <td className="whitespace-nowrap text-right">{fmtMoney(i.unit_price, o.currency)}</td>}
                       {hubSeen && <td className={`text-right font-medium ${i.received_quantity < i.quantity ? "text-g-problem" : "text-g-done"}`}>{i.received_quantity} of {i.quantity}</td>}
                     </tr>
                   ))}
@@ -261,7 +262,7 @@ export function OrderDetail() {
                 ["Shopify notes", o.shopify_note],
               ]} />
             </Section>
-            {isV360 && (
+            {isV360 && !hideMoney && (
               <Section title="Money">
                 <Facts rows={[
                   ["Order total", `${fmtMoney(o.order_total, o.currency)}${o.discount_total ? ` (after ${fmtMoney(o.discount_total, o.currency)} discount)` : ""}`],
@@ -324,7 +325,7 @@ export function OrderDetail() {
                 ...(o.delivery_tracking_url ? [["Tracking link", <a key="tl" href={o.delivery_tracking_url} target="_blank" rel="noreferrer" className="link break-all">{o.delivery_tracking_url}</a>] as [string, ReactNode]] : []),
                 ...((o.shopify_fulfillment_id || o.shopify_fulfillment_error || ["out_for_delivery", "delivered", "delivery_failed"].includes(o.status))
                   ? [["Shopify", <ShopifyFulfillment key="sf" order={o} canRetry={isV360 || isKbb} />] as [string, ReactNode]] : []),
-                ...((o.shopify_payment_synced || o.shopify_payment_error) ? [["Shopify payment tag", o.shopify_payment_error
+                ...(!hideMoney && (o.shopify_payment_synced || o.shopify_payment_error) ? [["Shopify payment tag", o.shopify_payment_error
                   ? <span key="sp" className="text-g-problem">Not updated: {o.shopify_payment_error}</span>
                   : <span key="sp" className="text-g-done">{o.shopify_payment_synced === "paid" ? "Full Payment Received" : "50% Advance Received"} {fmtDateTime(o.shopify_payment_synced_at ?? null)}</span>] as [string, ReactNode]] : []),
                 ["Delivered", fmtDateTime(o.delivered_at)],
@@ -332,7 +333,7 @@ export function OrderDetail() {
                 ...(o.return_disposition ? [["Return decision", RETURN_DISPOSITION[o.return_disposition] ?? o.return_disposition] as [string, ReactNode]] : []),
               ]} />
             </Section>
-            {(isAdmin || isKbb) && (
+            {can("orders.internal_notes") && (
               <Section
                 title="Internal notes"
                 aside={

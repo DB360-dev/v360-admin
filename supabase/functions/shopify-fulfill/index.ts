@@ -57,8 +57,11 @@ Deno.serve(async (req) => {
   });
   const { data: userData } = await asUser.auth.getUser();
   if (!userData?.user) return json(req, { error: "Your session has expired. Please sign in again." }, 401);
-  const [{ data: isV360 }, { data: isPartner }] = await Promise.all([asUser.rpc("is_v360"), asUser.rpc("is_partner")]);
-  if (!isV360 && !isPartner) return json(req, { error: "Not allowed" }, 403);
+  const [{ data: canV360 }, { data: canPartner }] = await Promise.all([
+    asUser.rpc("v360_can", { p_perm: "deliveries.manage" }),
+    asUser.rpc("partner_can", { p_perm: "deliveries.manage" }),
+  ]);
+  if (!canV360 && !canPartner) return json(req, { error: "Your role doesn't allow updating deliveries" }, 403);
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY);
   const { data: o, error: oErr } = await admin.from("orders")

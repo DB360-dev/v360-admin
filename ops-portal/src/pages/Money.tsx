@@ -23,14 +23,14 @@ const PAYMENT_KIND: Record<KbbPaymentKind, string> = {
 };
 
 export function Money() {
-  const { isV360 } = useOps();
+  const { isV360, can } = useOps();
   const [tab, setTab] = useState<Tab>(isV360 ? "payables" : "account");
   const tabs: { key: Tab; label: string }[] = isV360
     ? [
         { key: "payables", label: "Brand payables" },
         { key: "statements", label: "Statements" },
         { key: "account", label: "KBB account" },
-        { key: "settings", label: "Settings" },
+        ...(can("money.settings") ? [{ key: "settings" as const, label: "Settings" }] : []),
       ]
     : [{ key: "account", label: "My account" }];
 
@@ -53,17 +53,17 @@ export function Money() {
         ))}
       </div>
 
-      {tab === "payables" && isV360 && <PayablesTab />}
-      {tab === "statements" && isV360 && <StatementsTab />}
-      {tab === "account" && <AccountTab canRecord={isV360} />}
-      {tab === "settings" && isV360 && <SettingsTab />}
+      {tab === "payables" && isV360 && <PayablesTab canCreate={can("money.statements")} />}
+      {tab === "statements" && isV360 && <StatementsTab canCreate={can("money.statements")} />}
+      {tab === "account" && <AccountTab canRecord={isV360 && can("money.record_payment")} />}
+      {tab === "settings" && isV360 && can("money.settings") && <SettingsTab />}
     </>
   );
 }
 
 // ---------------------------------------------------------------- payables
 
-function PayablesTab() {
+function PayablesTab({ canCreate }: { canCreate: boolean }) {
   const q = useBrandPayables();
   const [creating, setCreating] = useState(false);
   const rows = q.data ?? [];
@@ -72,7 +72,7 @@ function PayablesTab() {
     <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <p className="text-[13.5px] text-muted">Delivered orders not yet on a statement. Create a statement to settle them.</p>
-        <Button variant="primary" onClick={() => setCreating(true)}><FileText className="h-4 w-4" /> Create statement</Button>
+        {canCreate && <Button variant="primary" onClick={() => setCreating(true)}><FileText className="h-4 w-4" /> Create statement</Button>}
       </div>
       <div className="panel overflow-hidden">
         <div className="overflow-x-auto">
@@ -93,7 +93,7 @@ function PayablesTab() {
                     <td className="text-right text-danger">−{fmtMoney(r.freight_sum, "PKR")}</td>
                     <td className="text-right font-semibold">{fmtMoney(r.payable_sum, "PKR")}</td>
                     <td className="text-right">
-                      <Button size="sm" onClick={() => setCreating(true)}>Create statement</Button>
+                      {canCreate && <Button size="sm" onClick={() => setCreating(true)}>Create statement</Button>}
                     </td>
                   </tr>
                 ))}
@@ -115,7 +115,7 @@ function PayablesTab() {
 
 // ---------------------------------------------------------------- statements
 
-function StatementsTab() {
+function StatementsTab({ canCreate }: { canCreate: boolean }) {
   const q = useSettlements();
   const [viewId, setViewId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
@@ -125,7 +125,7 @@ function StatementsTab() {
     <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <p className="text-[13.5px] text-muted">Monthly and pay-now statements issued to brands.</p>
-        <Button variant="primary" onClick={() => setCreating(true)}><FileText className="h-4 w-4" /> Create statement</Button>
+        {canCreate && <Button variant="primary" onClick={() => setCreating(true)}><FileText className="h-4 w-4" /> Create statement</Button>}
       </div>
       <div className="panel overflow-hidden">
         <div className="overflow-x-auto">

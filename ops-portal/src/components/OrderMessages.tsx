@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
+import { useOps } from "@/context/OpsContext";
 import { useMarkMessagesRead, useOrderMessages, useSendMessage } from "@/hooks/useData";
 import { fmtDateTime } from "@/lib/format";
 import { Spinner, ErrorState } from "@/components/ui/States";
@@ -33,6 +34,7 @@ function Bubble({ msg }: { msg: OrderMessage }) {
 }
 
 export function OrderMessages({ orderId, brandName }: Props) {
+  const canSend = useOps().can("orders.messages");
   const q = useOrderMessages(orderId);
   const send = useSendMessage({ inlineErrors: true });
   const markRead = useMarkMessagesRead(orderId);
@@ -90,7 +92,7 @@ export function OrderMessages({ orderId, brandName }: Props) {
       </div>
 
       {/* Composer */}
-      <div className="flex items-end gap-2">
+      {canSend && <div className="flex items-end gap-2">
         <textarea
           className="input min-h-[68px] flex-1 resize-none text-[13.5px]"
           placeholder={`Reply to ${brandName}… (Enter to send, Shift+Enter for new line)`}
@@ -108,7 +110,7 @@ export function OrderMessages({ orderId, brandName }: Props) {
         >
           <Send className="h-4 w-4" />
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

@@ -53,12 +53,13 @@ Deno.serve(async (req) => {
   const { data: userData, error: userErr } = await asUser.auth.getUser();
   if (userErr || !userData.user) return json(req, { error: "Your session has expired. Please sign in again." }, 401);
 
-  const [{ data: role }, { data: isV360 }] = await Promise.all([
-    asUser.rpc("my_role_in", { p_org_id: body.brand_id }),
-    asUser.rpc("is_v360"),
+  // Brand staff need the "Connect and sync Shopify" permission (owners have it); V360 needs brand settings.
+  const [{ data: canBrand }, { data: canV360 }] = await Promise.all([
+    asUser.rpc("brand_can", { p_brand_id: body.brand_id, p_perm: "shopify.manage" }),
+    asUser.rpc("v360_can", { p_perm: "brands.settings" }),
   ]);
-  if (role !== "brand_owner" && !isV360) {
-    return json(req, { error: "Only the brand owner can connect a Shopify store" }, 403);
+  if (!canBrand && !canV360) {
+    return json(req, { error: "Your role doesn't allow connecting a Shopify store" }, 403);
   }
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY);

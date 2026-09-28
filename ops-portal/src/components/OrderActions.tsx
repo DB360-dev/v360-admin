@@ -2,7 +2,8 @@ import { useMemo, useState, type ReactNode } from "react";
 import { describeError } from "@/lib/errors";
 import { DEDICATED, NOTE_REQUIRED, STATUS, TERMINAL } from "@/lib/status";
 import type { OrderItem, OrderStatus, Order, ShipmentStatus, StatusTransition } from "@/lib/types";
-import { useOps } from "@/context/OpsContext";
+import { useOps, type OpsRole } from "@/context/OpsContext";
+import { transitionPerm, type Perm } from "@/lib/permissions";
 import {
   useChangeStatus, useHold, useOverride, useRemoveFromShipment, useResume, useTransitions,
 } from "@/hooks/useData";
@@ -32,20 +33,22 @@ type Dlg =
   | { kind: "status"; to: OrderStatus }
   | { kind: "hold" | "resume" | "override" | "remove" | "delivered" | "tracking" | "ofd" | "receive" | "edit" | "return" };
 
-/** Status moves this role may make from `status` (the order page's status buttons). */
-export function availableTransitions(t: StatusTransition[], status: OrderStatus, isV360: boolean): OrderStatus[] {
+/** Status moves this user may make from `status` (the order page's status buttons).
+ *  V360 may make any listed move, KBB only partner moves; both need the move's permission. */
+export function availableTransitions(t: StatusTransition[], status: OrderStatus, role: OpsRole | null, can: (p: Perm) => boolean): OrderStatus[] {
   const set = new Set<OrderStatus>();
+  if (!role) return [];
   for (const r of t) {
     if (r.from_status !== status || DEDICATED.includes(r.to_status) || r.to_status === status) continue;
-    if (isV360 || r.actor === "partner") set.add(r.to_status);
+    if ((role === "v360" || r.actor === "partner") && can(transitionPerm(r.to_status))) set.add(r.to_status);
   }
   return [...set];
 }
 
 export function useAvailableTransitions(status: OrderStatus): OrderStatus[] {
-  const { isV360 } = useOps();
+  const { role, can } = useOps();
   const t = useTransitions().data ?? [];
-  return useMemo(() => availableTransitions(t, status, isV360), [t, status, isV360]);
+  return useMemo(() => availableTransitions(t, status, role, can), [t, status, role, can]);
 }
 
 function hasVisible(children: ReactNode): boolean {
@@ -55,7 +58,7 @@ function hasVisible(children: ReactNode): boolean {
 }
 
 export function OrderActions({ order, items, compact }: { order: Order; items?: OrderItem[]; compact?: boolean }) {
-  const { isV360 } = useOps();
+  const { can } = useOps();
   const [dlg, setDlg] = useState<Dlg | null>(null);
   const close = () => setDlg(null);
   const s = order.status;
@@ -75,7 +78,8 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
   };
   const size = "sm";
 
-  const lastMile = ["received_by_partner", "preparing_for_delivery", "out_for_delivery", "delivery_failed"].includes(s);
+  // Last-mile work (tracking, delivery, cash) needs deliveries.manage.
+  const lastMile = can("deliveries.manage") && ["received_by_partner", "preparing_for_delivery", "out_for_delivery", "delivery_failed"].includes(s);
   // items for hub receiving; also covers QueueOrder.order_items for return dialog
   const orderItems = items ?? (order as { order_items?: OrderItem[] }).order_items;
   // Cancelled before its shipment was handed to the carrier: goods are still in Pakistan.
@@ -88,11 +92,11 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
 
   // --- Group 1: status / confirmation buttons (move the order forward) ---
   const statusChildren = [
-    s === "out_for_delivery" && <Button key="delivered" size={size} variant="primary" onClick={() => open({ kind: "delivered" })}>Mark delivered</Button>,
-    isV360 && (s === "dispatched_to_hub" || s === "hub_issue") && orderItems && (
+    can("deliveries.manage") && s === "out_for_delivery" && <Button key="delivered" size={size} variant="primary" onClick={() => open({ kind: "delivered" })}>Mark delivered</Button>,
+    can("hub.receive") && (s === "dispatched_to_hub" || s === "hub_issue") && orderItems && (
       <Button key="receive" size={size} variant="primary" onClick={() => open({ kind: "receive" })}>Receive at hub</Button>
     ),
-    s === "hold" && <Button key="resume" size={size} variant="primary" onClick={() => open({ kind: "resume" })}>Resume</Button>,
+    can("orders.hold") && s === "hold" && <Button key="resume" size={size} variant="primary" onClick={() => open({ kind: "resume" })}>Resume</Button>,
     ...sorted.map((to) => (
       <Button key={to} size={size} variant={PRIMARY.includes(to) ? "primary" : DANGER.includes(to) ? "danger-ghost" : "secondary"} onClick={() => open(to === "out_for_delivery" ? { kind: "ofd" } : { kind: "status", to })}>
         {VERB[to] ?? STATUS[to].label}
@@ -103,12 +107,12 @@ export function OrderActions({ order, items, compact }: { order: Order; items?: 
   // --- Group 2: action buttons (hold, tracking, edits — never status moves) ---
   const actionChildren = [
     lastMile && <Button key="tracking" size={size} onClick={() => open({ kind: "tracking" })}>{order.delivery_tracking_number ? "Edit tracking" : "Add tracking"}</Button>,
-    !compact && isV360 && s === "assigned_to_shipment" && <Button key="remove" size={size} onClick={() => open({ kind: "remove" })}>Remove from shipment</Button>,
-    !compact && isV360 && (s === "returned" || (s === "cancelled" && !!order.inbound_batch_id)) && (!order.return_disposition || order.return_disposition === "pending") && <Button key="return" size={size} onClick={() => open({ kind: "return" })}>Decide on return</Button>,
-    !compact && isV360 && EDITABLE.includes(s) && <Button key="edit" size={size} onClick={() => open({ kind: "edit" })}>Edit customer</Button>,
-    (lastMile || !compact) && s !== "hold" && !TERMINAL.includes(s) && <Button key="hold" size={size} variant="ghost" onClick={() => open({ kind: "hold" })}>Hold</Button>,
+    !compact && can("shipments.edit_orders") && s === "assigned_to_shipment" && <Button key="remove" size={size} onClick={() => open({ kind: "remove" })}>Remove from shipment</Button>,
+    !compact && can("orders.return_decision") && (s === "returned" || (s === "cancelled" && !!order.inbound_batch_id)) && (!order.return_disposition || order.return_disposition === "pending") && <Button key="return" size={size} onClick={() => open({ kind: "return" })}>Decide on return</Button>,
+    !compact && can("orders.edit_customer") && EDITABLE.includes(s) && <Button key="edit" size={size} onClick={() => open({ kind: "edit" })}>Edit customer</Button>,
+    can("orders.hold") && (lastMile || !compact) && s !== "hold" && !TERMINAL.includes(s) && <Button key="hold" size={size} variant="ghost" onClick={() => open({ kind: "hold" })}>Hold</Button>,
     lastMile && moves.includes("returned") && <Button key="return-mark" size={size} variant="ghost" onClick={() => open({ kind: "status", to: "returned" })}>Return</Button>,
-    !compact && isV360 && <Button key="override" size={size} variant="ghost" onClick={() => open({ kind: "override" })}>Override</Button>,
+    !compact && can("orders.override_status") && <Button key="override" size={size} variant="ghost" onClick={() => open({ kind: "override" })}>Override</Button>,
   ];
 
   const hasStatus = hasVisible(statusChildren);

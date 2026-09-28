@@ -32,7 +32,7 @@ function ResolveDialog({ row, onClose }: { row: BdDiscrepancy | null; onClose: (
 }
 
 export function Discrepancies() {
-  const { isV360 } = useOps();
+  const canResolve = useOps().can("discrepancies.resolve");
   const q = useBdDiscrepancies();
   const reopen = useSetDiscrepancyResolved();
   const [tab, setTab] = useState<Tab>("open");
@@ -73,7 +73,7 @@ export function Discrepancies() {
                 <th className="text-right">Difference</th>
                 <th>Note</th>
                 <th>{tab === "open" ? "Checked" : "Resolved"}</th>
-                <th className="text-right">{isV360 ? "Action" : ""}</th>
+                <th className="text-right">{canResolve ? "Action" : ""}</th>
               </tr>
             </thead>
             {q.isLoading ? <SkeletonRows cols={cols} /> : (
@@ -123,7 +123,7 @@ export function Discrepancies() {
                         )}
                       </td>
                       <td className="text-right">
-                        {isV360 && (tab === "open" ? (
+                        {canResolve && (tab === "open" ? (
                           <Button size="sm" onClick={() => setResolving(d)}>Resolve</Button>
                         ) : (
                           <Button size="sm" variant="ghost" loading={reopen.isPending && reopen.variables?.id === d.id}

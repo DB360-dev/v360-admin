@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, AlertTriangle, Banknote, Boxes, Building2, Coins, Gauge, Inbox, LogOut, Menu, Monitor, Moon, PackageCheck, PhoneCall, Receipt, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
+  Activity, AlertTriangle, Banknote, Boxes, Building2, Coins, Gauge, Inbox, LogOut, Menu, Monitor, Moon, PackageCheck, PhoneCall, ShieldCheck, FileSpreadsheet, Receipt, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
@@ -11,31 +11,35 @@ import { useBdDiscrepancyCount, useStatusCounts } from "@/hooks/useData";
 import { useOpsRealtime } from "@/hooks/useRealtime";
 import { useOnline } from "@/hooks/useOnline";
 import { CONFIRM_QUEUE, DELIVERY_QUEUE } from "@/lib/status";
-import { ROLE_LABEL } from "@/lib/status";
+import type { Perm } from "@/lib/permissions";
+import { reportsFor } from "@/reports";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { NotificationBanner } from "./NotificationBanner";
 import { NotificationToggle, NotificationPanel } from "./NotificationArea";
 
 type Badge = "confirm" | "deliver" | "hub" | "discrepancy";
-interface NavItem { to: string; label: string; icon: LucideIcon; end?: boolean; roles: OpsRole[]; badge?: Badge; section?: string }
+/** A nav item shows when the user's side matches `sides` and they have `perm` (or manage their team, for `managers`). */
+interface NavItem { to: string; label: string; icon: LucideIcon; end?: boolean; sides?: OpsRole[]; perm?: Perm; managers?: boolean; reports?: boolean; badge?: Badge; section?: string }
 
 const NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: Gauge, end: true, roles: ["v360", "kbb"] },
-  { to: "/orders", label: "All orders", icon: Boxes, roles: ["v360", "kbb"] },
-  { to: "/confirmations", label: "Confirmations", icon: PhoneCall, roles: ["v360", "kbb"], badge: "confirm", section: "Work queues" },
-  { to: "/receiving", label: "Hub receiving", icon: Inbox, roles: ["v360"], badge: "hub" },
-  { to: "/shipments", label: "Shipments", icon: Ship, roles: ["v360", "kbb"] },
-  { to: "/discrepancies", label: "Discrepancies", icon: AlertTriangle, roles: ["v360", "kbb"], badge: "discrepancy" },
-  { to: "/inventory", label: "Inventory", icon: PackageCheck, roles: ["v360", "kbb"] },
-  { to: "/deliveries", label: "Deliveries", icon: Truck, roles: ["v360", "kbb"], badge: "deliver" },
-  { to: "/invoices", label: "Invoices", icon: Receipt, roles: ["v360", "kbb"], section: "Finance" },
-  { to: "/brands", label: "Brands", icon: Building2, roles: ["v360"], section: "Admin" },
-  { to: "/money", label: "Money", icon: Banknote, roles: ["v360"] },
-  { to: "/money", label: "My account", icon: Banknote, roles: ["kbb"] },
-  { to: "/team", label: "Team & access", icon: Users, roles: ["v360"] },
-  { to: "/fx", label: "FX rates", icon: Coins, roles: ["v360"] },
-  { to: "/webhooks", label: "Shopify sync", icon: Webhook, roles: ["v360"] },
-  { to: "/activity", label: "Activity", icon: Activity, roles: ["v360"] },
+  { to: "/", label: "Dashboard", icon: Gauge, end: true },
+  { to: "/orders", label: "All orders", icon: Boxes, perm: "orders.view" },
+  { to: "/confirmations", label: "Confirmations", icon: PhoneCall, perm: "confirmations.view", badge: "confirm", section: "Work queues" },
+  { to: "/receiving", label: "Hub receiving", icon: Inbox, perm: "hub.view", badge: "hub", section: "Work queues" },
+  { to: "/shipments", label: "Shipments", icon: Ship, perm: "shipments.view" },
+  { to: "/discrepancies", label: "Discrepancies", icon: AlertTriangle, perm: "discrepancies.view", badge: "discrepancy" },
+  { to: "/inventory", label: "Inventory", icon: PackageCheck, perm: "inventory.view" },
+  { to: "/deliveries", label: "Deliveries", icon: Truck, perm: "deliveries.view", badge: "deliver" },
+  { to: "/invoices", label: "Invoices", icon: Receipt, perm: "invoices.view", section: "Finance" },
+  { to: "/money", label: "Money", icon: Banknote, sides: ["v360"], perm: "money.view", section: "Finance" },
+  { to: "/money", label: "My account", icon: Banknote, sides: ["kbb"], perm: "money.view", section: "Finance" },
+  { to: "/reports", label: "Reports", icon: FileSpreadsheet, reports: true, section: "Finance" },
+  { to: "/brands", label: "Brands", icon: Building2, perm: "brands.view", section: "Admin" },
+  { to: "/team", label: "Team & access", icon: Users, managers: true, section: "Admin" },
+  { to: "/roles", label: "Roles & permissions", icon: ShieldCheck, managers: true, section: "Admin" },
+  { to: "/fx", label: "FX rates", icon: Coins, perm: "fx.view", section: "Admin" },
+  { to: "/webhooks", label: "Shopify sync", icon: Webhook, perm: "webhooks.view", section: "Admin" },
+  { to: "/activity", label: "Activity", icon: Activity, perm: "activity.view", section: "Admin" },
 ];
 
 function ThemeSwitch() {
@@ -56,7 +60,7 @@ function ThemeSwitch() {
 }
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
-  const { role, orgName, memberRole } = useOps();
+  const { role, orgName, roleName, canManageTeam, can } = useOps();
   const { user, signOut } = useAuth();
   const c = useStatusCounts().data ?? {};
   const sum = (ss: string[]) => ss.reduce((n, s) => n + (c[s as keyof typeof c] ?? 0), 0);
@@ -67,7 +71,8 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     hub: sum(["dispatched_to_hub", "hub_issue"]),
     discrepancy: discrepancyCount,
   };
-  const items = NAV.filter((n) => role && n.roles.includes(role));
+  const items = NAV.filter((n) => role && (!n.sides || n.sides.includes(role))
+    && (n.managers ? canManageTeam : n.reports ? reportsFor(role, can).length > 0 : !n.perm || can(n.perm)));
 
   return (
     <div className="flex h-full flex-col">
@@ -76,12 +81,13 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <span className="grid h-6 w-6 place-items-center rounded bg-ink text-[11px] font-bold text-bg" aria-hidden>{role === "kbb" ? "K" : "V"}</span>
           {role === "kbb" ? "KBB Fulfilment" : "V360 Operations"}
         </div>
-        <div className="mt-1.5 text-[12.5px] text-muted">{memberRole ? ROLE_LABEL[memberRole] ?? memberRole : orgName}</div>
+        <div className="mt-1.5 text-[12.5px] text-muted">{roleName ?? orgName}</div>
       </div>
       <nav className="flex-1 overflow-y-auto px-3" aria-label="Main">
-        {items.map(({ to, label, icon: Icon, end, badge, section }) => (
+        {items.map(({ to, label, icon: Icon, end, badge, section }, i) => (
           <div key={`${to}:${label}`}>
-            {section && <div className="mb-1 mt-4 px-2 text-[12px] font-medium text-faint">{section}</div>}
+            {/* A section heading shows once, above its first visible item */}
+            {section && items.findIndex((n) => n.section === section) === i && <div className="mb-1 mt-4 px-2 text-[12px] font-medium text-faint">{section}</div>}
             <NavLink to={to} end={end} onClick={onNavigate}
               className={({ isActive }) => `mb-0.5 flex items-center gap-2.5 rounded px-2 py-1.5 text-[14px] transition-colors ${
                 isActive ? "bg-primary-soft font-medium text-primary" : "text-muted hover:bg-sunken hover:text-ink"}`}>

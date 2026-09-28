@@ -4,9 +4,10 @@ import { supabase } from "@/lib/supabase";
 import { describeError, describeFunctionError } from "@/lib/errors";
 import type {
   BrandMoneySettings, BrandPayable, BrandPayoutCandidate, BrandRow, BrandShippingInvoice, BrandShippingInvoiceLine, FxRate, InboundBatchAdmin, InvoicePaymentStatus, InvoiceRecord, InvoiceType, KbbOrderAccount, KbbPayment, MoneySettings, OpsOrderDetail, Order,
-  OrderEvent, OrderInternalNote, OrderItem, OrderMessage, OrderNoteRole, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
+  OrderEvent, OrderInternalNote, PermissionDef, RoleRow, OrderItem, OrderMessage, OrderNoteRole, OrderOverview, OrderStatus, ReturnDispositionValue, Settlement, ShipmentBrandWeight,
   ShipmentEvent, ShipmentOverview, ShipmentStatus, StatusTransition, TeamMember, WebhookEvent,
 } from "@/lib/types";
+import type { OpsRole } from "@/context/OpsContext";
 
 export const PAGE_SIZE = 50;
 export const ROOT = ["ops"] as const;
@@ -280,9 +281,45 @@ export function useTeam() {
   return useQuery({
     queryKey: k("team"),
     queryFn: async () => {
-      const { data, error } = await supabase.from("team_members").select("*").order("organization_type").order("organization_name");
+      const [team, roles] = await Promise.all([
+        supabase.from("team_members").select("*").order("organization_type").order("organization_name"),
+        supabase.from("memberships").select("id, role_id"),
+      ]);
+      if (team.error) throw team.error;
+      if (roles.error) throw roles.error;
+      const roleOf = new Map((roles.data ?? []).map((m) => [m.id as string, m.role_id as string | null]));
+      return ((team.data ?? []) as Omit<TeamMember, "role_id">[]).map((m) => ({ ...m, role_id: roleOf.get(m.membership_id) ?? null }));
+    },
+  });
+}
+
+/** The permission catalog, in display order. */
+export function usePermissionCatalog() {
+  return useQuery({
+    queryKey: k("permission-catalog"),
+    staleTime: Infinity,
+    queryFn: async () => {
+      const { data, error } = await supabase.from("permissions").select("*").order("sort");
       if (error) throw error;
-      return (data ?? []) as TeamMember[];
+      return (data ?? []) as PermissionDef[];
+    },
+  });
+}
+
+/** Custom roles with their permissions and how many users have each. */
+export function useRoles() {
+  return useQuery({
+    queryKey: k("roles"),
+    queryFn: async () => {
+      const [roles, members] = await Promise.all([
+        supabase.from("roles").select("id, organization_id, org_type, name, description, is_preset, role_permissions(permission)").order("name"),
+        supabase.from("memberships").select("role_id").not("role_id", "is", null),
+      ]);
+      if (roles.error) throw roles.error;
+      if (members.error) throw members.error;
+      const counts = new Map<string, number>();
+      for (const m of members.data ?? []) counts.set(m.role_id as string, (counts.get(m.role_id as string) ?? 0) + 1);
+      return ((roles.data ?? []) as Omit<RoleRow, "member_count">[]).map((r) => ({ ...r, member_count: counts.get(r.id) ?? 0 }));
     },
   });
 }
@@ -927,11 +964,34 @@ export const useReplayWebhook = (o?: ActionOptions) => useOpsAction(
   (webhookId: string) => rpc<{ action?: string; reason?: string }>("replay_webhook", { p_webhook_id: webhookId }),
   (r) => (r?.action === "error" ? `Replayed, but it failed again: ${r.reason}` : `Replayed: ${r?.action ?? "done"}`), o);
 
+/**
+ * Role picker value: a built-in admin ("admin" for V360/KBB, "brand_owner" for brands)
+ * or "role:<uuid>" for a custom role of that organization.
+ */
+export function membershipRoleFields(choice: string, orgType: string): { role: string; role_id: string | null } {
+  if (choice.startsWith("role:")) {
+    const role = orgType === "partner" ? "partner_agent" : orgType === "brand" ? "brand_staff" : "operator";
+    return { role, role_id: choice.slice(5) };
+  }
+  return { role: choice, role_id: null };
+}
+
 export const useUpdateMembership = (o?: ActionOptions) => useOpsAction(
-  async (v: { membershipId: string; role: string }) => {
-    const { error } = await supabase.from("memberships").update({ role: v.role }).eq("id", v.membershipId).select("id").single();
+  async (v: { membershipId: string; choice: string; orgType: string }) => {
+    const { error } = await supabase.from("memberships").update(membershipRoleFields(v.choice, v.orgType))
+      .eq("id", v.membershipId).select("id").single();
     if (error) throw error;
   }, "Role updated", o);
+
+export const useSaveRole = (o?: ActionOptions) => useOpsAction(
+  (v: { id: string | null; orgId: string; name: string; description: string; permissions: string[] }) =>
+    rpc<string>("save_org_role", {
+      p_id: v.id, p_org_id: v.orgId, p_name: v.name, p_description: v.description, p_permissions: v.permissions,
+    }),
+  (_r, v) => (v.id ? `Role "${v.name.trim()}" saved` : `Role "${v.name.trim()}" created`), o);
+
+export const useDeleteRole = (o?: ActionOptions) => useOpsAction(
+  (id: string) => rpc("delete_role", { p_id: id }), "Role deleted", o);
 
 export const useRemoveMembership = (o?: ActionOptions) => useOpsAction(
   async (membershipId: string) => {
@@ -940,9 +1000,9 @@ export const useRemoveMembership = (o?: ActionOptions) => useOpsAction(
   }, "Access removed", o);
 
 export const useAddUser = (o?: ActionOptions) => useOpsAction(
-  async (v: { email: string; full_name: string; organization_id: string; role: string; password: string }) => {
+  async (v: { email: string; full_name: string; organization_id: string; role: string; role_id: string | null; password: string }) => {
     const { data, error } = await supabase.functions.invoke("manage-user", {
-      body: { ...v, password: v.password || undefined },
+      body: { ...v, role_id: v.role_id || undefined, password: v.password || undefined },
     });
     if (error) throw new Error(await describeFunctionError(error));
     return data as { message: string };
@@ -1054,13 +1114,13 @@ export function useAgeing(days: number, statuses?: OrderStatus[]) {
 }
 
 /** Small counts for dashboard tiles. RLS decides what each role can count. */
-export function useDashboardCounts(isV360: boolean) {
+export function useDashboardCounts(role: OpsRole | null) {
   return useQuery({
-    queryKey: k("dash-counts", isV360),
+    queryKey: k("dash-counts", role),
     queryFn: async () => {
       const head = { count: "exact" as const, head: true };
       const shipmentsMoving = supabase.from("shipments").select("*", head).in("status", ["handed_to_carrier", "in_transit", "customs", "arrived_bd"]);
-      if (!isV360) {
+      if (role !== "v360") {
         const r = await shipmentsMoving;
         if (r.error) throw r.error;
         return { shipmentsMoving: r.count ?? 0, parcelsAwaiting: 0, pendingBrands: 0, failedWebhooks: 0, draftShipments: 0 };
