@@ -23,6 +23,8 @@ import { Brands } from "@/pages/Brands";
 import { Team } from "@/pages/Team";
 import { Roles } from "@/pages/Roles";
 import { Reports } from "@/pages/Reports";
+import { CourierSettings } from "@/pages/CourierSettings";
+import { CourierSlips } from "@/pages/CourierSlips";
 import { reportsFor } from "@/reports";
 import { FxRates } from "@/pages/FxRates";
 import { Money } from "@/pages/Money";
@@ -78,7 +80,7 @@ export const router = createBrowserRouter([
     errorElement: <RouteError />,
     children: [{
       element: <RequireOps />,
-      children: [{
+      children: [guarded("deliveries.manage", "courier-slips", <CourierSlips />), {
         element: <Layout />,
         children: [
           { index: true, element: <Dashboard /> },
@@ -99,6 +101,7 @@ export const router = createBrowserRouter([
           guarded("fx.view", "fx", <FxRates />),
           guarded("webhooks.view", "webhooks", <Webhooks />),
           guarded("activity.view", "activity", <Activity />),
+          guarded("couriers.manage", "couriers", <CourierSettings />),
           { element: <AnyReport />, children: [{ path: "reports", element: <Reports /> }] },
           {
             element: <TeamManagers />,

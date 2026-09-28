@@ -8,6 +8,12 @@ import { useBulkOrderAction, useTransitions, type BulkOpsAction } from "@/hooks/
 import { plural } from "@/lib/format";
 import { Button } from "./ui/Button";
 import { ActionDialog } from "./ActionDialog";
+import { CourierBookDialog } from "./CourierBookDialog";
+import { COURIER_LABEL, useCourierAccount, useCourierParcels } from "@/hooks/useCourier";
+import { supabase } from "@/lib/supabase";
+import { describeError } from "@/lib/errors";
+import { toast } from "sonner";
+import type { QueueOrder } from "@/hooks/useData";
 import { DANGER, VERB, availableTransitions } from "./OrderActions";
 
 /**
@@ -45,9 +51,26 @@ export function useBulkSelectable() {
 }
 
 export function BulkOrderActions({ orders, onDone }: { orders: { id: string; status: OrderStatus }[]; onDone: () => void }) {
-  const { role, can } = useOps();
+  const { role, can, isKbb } = useOps();
   const t = useTransitions().data ?? [];
   const bulk = useBulkOrderAction();
+  // KBB: book the selection with the courier (all received / preparing, none booked yet).
+  const courier = useCourierAccount();
+  const parcels = useCourierParcels(isKbb ? orders.map((o) => o.id) : []);
+  const [booking, setBooking] = useState<QueueOrder[] | null>(null);
+  const [loadingBook, setLoadingBook] = useState(false);
+  const courierOk = isKbb && can("deliveries.manage") && !!courier.data?.is_enabled && orders.length > 0
+    && orders.every((o) => o.status === "received_by_partner" || o.status === "preparing_for_delivery")
+    && !!parcels.data && orders.every((o) => !parcels.data!.has(o.id));
+  const openBooking = async () => {
+    setOpen(false);
+    setLoadingBook(true);
+    try {
+      const { data, error } = await supabase.from("orders").select("*, brand:organizations(name), order_items(*)").in("id", orders.map((o) => o.id));
+      if (error) throw error;
+      setBooking((data ?? []) as QueueOrder[]);
+    } catch (e) { toast.error(describeError(e)); } finally { setLoadingBook(false); }
+  };
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<Item | null>(null);
   const items = commonItems(t, orders.map((o) => o.status), role, can);
@@ -58,8 +81,8 @@ export function BulkOrderActions({ orders, onDone }: { orders: { id: string; sta
   return (
     <>
       <div className="relative">
-        <Button size="sm" variant="primary" loading={bulk.isPending} disabled={items.length === 0}
-          title={items.length === 0 ? "The selected orders are at different stages with no action in common" : undefined}
+        <Button size="sm" variant="primary" loading={bulk.isPending || loadingBook} disabled={items.length === 0 && !courierOk}
+          title={items.length === 0 && !courierOk ? "The selected orders are at different stages with no action in common" : undefined}
           onClick={() => setOpen((v) => !v)}>
           Bulk action <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
         </Button>
@@ -67,6 +90,11 @@ export function BulkOrderActions({ orders, onDone }: { orders: { id: string; sta
           <>
             <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
             <div className="absolute right-0 z-30 mt-1 min-w-[210px] overflow-hidden rounded-lg border border-line bg-surface py-1 shadow-lg">
+              {courierOk && (
+                <button onClick={() => void openBooking()} className="block w-full px-3 py-2 text-left text-[13.5px] font-medium text-ink hover:bg-sunken">
+                  Book with {COURIER_LABEL}
+                </button>
+              )}
               {items.map((a) => (
                 <button key={a.key} onClick={() => { setOpen(false); bulk.reset(); setPicked(a); }}
                   className={`block w-full px-3 py-2 text-left text-[13.5px] hover:bg-sunken ${a.danger ? "text-g-problem" : "text-ink"}`}>
@@ -90,6 +118,7 @@ export function BulkOrderActions({ orders, onDone }: { orders: { id: string; sta
           onConfirm={(note) => bulk.mutate({ ids: orders.map((o) => o.id), action: picked.action, note },
             { onSuccess: () => { setPicked(null); onDone(); } })} />
       )}
+      {booking && <CourierBookDialog orders={booking} onClose={() => { setBooking(null); onDone(); }} />}
     </>
   );
 }

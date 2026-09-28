@@ -21,3 +21,12 @@ verify_jwt = true
 # Called from the ops portal (V360) when an invoice is marked paid.
 [functions.shopify-payment-sync]
 verify_jwt = true
+
+# Called from the ops portal (KBB) to book parcels with a courier.
+[functions.courier]
+verify_jwt = true
+
+# Called by the courier (RedX) with parcel status updates. Protected by the
+# ?token= secret shown in Courier settings.
+[functions.courier-webhook]
+verify_jwt = false
