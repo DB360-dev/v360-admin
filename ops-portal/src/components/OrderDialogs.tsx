@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Dialog } from "./ui/Dialog";
 import { Button } from "./ui/Button";
@@ -7,7 +7,7 @@ import { describeError } from "@/lib/errors";
 import { fmtMoney } from "@/lib/format";
 import type { Order, OrderItem, ReturnDispositionValue } from "@/lib/types";
 import { bdQty, hubQty } from "@/lib/items";
-import { useMarkDelivered, useMarkOutForDelivery, useReceiveOrder, useReturnDisposition, useSetTracking, useShopifyFulfill, useUpdateOrderDetails } from "@/hooks/useData";
+import { useMarkDelivered, useMarkOutForDelivery, useReceiveOrder, useRememberedWeights, useReturnDisposition, useSetTracking, useShopifyFulfill, useUpdateOrderDetails } from "@/hooks/useData";
 
 interface Base { open: boolean; onClose: () => void }
 
@@ -108,6 +108,8 @@ export function TrackingDialog({ order, open, onClose, outForDelivery = false }:
 // ---------- Hub receiving ------------------------------------------------
 export function ReceiveDialog({ order, items, open, onClose }: Base & { order: Order; items: OrderItem[] }) {
   const m = useReceiveOrder({ inlineErrors: true });
+  const remembered = useRememberedWeights(open ? order.id : null);
+  const prefilled = useRef(false);
   const pkItems = items.filter((i) => hubQty(i) > 0);
   const bdItems = items.filter((i) => bdQty(i) > 0);
   const [qty, setQty] = useState<Record<string, string>>({});
@@ -121,8 +123,16 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
       setWeights(Object.fromEntries(pkItems.map((i) => [i.id, ""])));
       setNote("");
       setErr(null);
+      prefilled.current = false;
     }
   }, [open]);
+  // Fill in weights saved from earlier orders of the same product, once, without overwriting anything typed meanwhile.
+  const saved = remembered.data;
+  useEffect(() => {
+    if (!open || !saved || prefilled.current) return;
+    prefilled.current = true;
+    setWeights((s) => ({ ...s, ...Object.fromEntries(pkItems.filter((i) => saved[i.id] && !(s[i.id] ?? "").trim()).map((i) => [i.id, String(saved[i.id])])) }));
+  }, [open, saved]);
 
   // Counts are Pakistan units only; the server adds each line's BD-stock units on top.
   const parsed = pkItems.map((i) => ({ i, exp: hubQty(i), n: Math.max(0, Math.min(hubQty(i), Math.floor(Number(qty[i.id] ?? 0) || 0))) }));
@@ -134,12 +144,13 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
     if (weightMissing) { setErr("Enter the weight (kg) of every item"); return; }
     setErr(null);
     const payload = missing.length === 0 ? null : parsed.map(({ i, n }) => ({ item_id: i.id, received_quantity: n }));
-    m.mutate({ id: order.id, weight: orderWeight!, items: payload, note }, { onSuccess: onClose });
+    const itemWeights = weightRows.map((r) => ({ item_id: r.i.id, weight_kg: r.w }));
+    m.mutate({ id: order.id, weight: orderWeight!, items: payload, note, itemWeights }, { onSuccess: onClose });
   };
 
   return (
     <Dialog open={open} onClose={onClose} onSubmit={submit} busy={m.isPending} error={m.error ? describeError(m.error) : null}
-      title={`Receive ${order.order_number}`} description="Count what physically arrived and record the weight of every item. The order only becomes ready for shipment when every item sent from Pakistan is here."
+      title={`Receive ${order.order_number}`} description="Count what physically arrived and record the weight of every item. Weights are remembered per product and filled in next time. The order only becomes ready for shipment when every item sent from Pakistan is here."
       footer={<>
         <Button onClick={onClose} disabled={m.isPending}>Cancel</Button>
         <Button type="submit" variant={missing.length ? "danger" : "primary"} loading={m.isPending}>
@@ -172,6 +183,11 @@ export function ReceiveDialog({ order, items, open, onClose }: Base & { order: O
                 <input type="text" inputMode="decimal" placeholder="kg" aria-label={`Item weight for ${i.product_name}`}
                   className={`input h-8 w-20 text-right ${err && !(weights[i.id] ?? "").trim() ? "border-g-problem" : ""}`}
                   value={weights[i.id] ?? ""} onChange={(e) => { setWeights((s) => ({ ...s, [i.id]: e.target.value })); setErr(null); }} />
+                {saved?.[i.id] != null && (
+                  <div className="text-[11.5px] text-faint">
+                    {Number(weights[i.id]) === saved[i.id] ? "saved" : `was ${saved[i.id]} kg`}
+                  </div>
+                )}
               </td>
             </tr>
           ))}
