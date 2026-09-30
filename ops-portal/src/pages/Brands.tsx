@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Building2, Settings } from "lucide-react";
+import { Building2, FlaskConical, Settings } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
 import {
   useApproveBrand,
@@ -8,6 +8,7 @@ import {
   useBrands,
   useRejectBrand,
   useSaveBrandMoneySettings,
+  useSetBrandTest,
 } from "@/hooks/useData";
 import { describeError } from "@/lib/errors";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -280,6 +281,8 @@ export function Brands() {
   const [approveBrandRow, setApproveBrandRow] = useState<BrandRow | null>(null);
   const [editBrandRow, setEditBrandRow] = useState<BrandRow | null>(null);
   const [rejectBrandRow, setRejectBrandRow] = useState<BrandRow | null>(null);
+  const setTest = useSetBrandTest({ inlineErrors: true });
+  const [testBrandRow, setTestBrandRow] = useState<BrandRow | null>(null);
 
   const all = q.data ?? [];
   const pending = all.filter((b) => b.approval_status === "pending").length;
@@ -306,7 +309,12 @@ export function Brands() {
                   const c = conn(b);
                   return (
                     <tr key={b.id}>
-                      <td><Link to={`/orders?brand=${b.id}`} className="font-semibold hover:underline">{b.name}</Link></td>
+                      <td>
+                        <span className="inline-flex items-center gap-2">
+                          <Link to={`/orders?brand=${b.id}`} className="font-semibold hover:underline">{b.name}</Link>
+                          {b.is_test && <span title="Test brand: KBB doesn't see its orders"><Pill label="Test" group="closed" /></span>}
+                        </span>
+                      </td>
                       <td className="text-muted">{b.contact_phone ?? "—"}</td>
                       <td className="text-muted">{fmtDate(b.created_at)}</td>
                       <td>{c ? <span className="inline-flex items-center gap-2"><Pill {...(SHOP[c.status] ?? { label: c.status, group: "closed" })} /><span className="text-[12.5px] text-faint">{c.shop_domain}</span></span> : <span className="text-faint">Not connected</span>}</td>
@@ -316,6 +324,11 @@ export function Brands() {
                         {canSettings && tab === "approved" && (
                           <Button size="sm" variant="ghost" onClick={() => setEditBrandRow(b)}>
                             <Settings className="mr-1 h-3.5 w-3.5" /> Settings
+                          </Button>
+                        )}
+                        {canSettings && tab === "approved" && (
+                          <Button size="sm" variant="ghost" onClick={() => { setTest.reset(); setTestBrandRow(b); }}>
+                            <FlaskConical className="mr-1 h-3.5 w-3.5" /> {b.is_test ? "Make live" : "Make test"}
                           </Button>
                         )}
                         {canApprove && tab !== "approved" && (
@@ -358,6 +371,22 @@ export function Brands() {
           brand={editBrandRow}
           open={!!editBrandRow}
           onClose={() => setEditBrandRow(null)}
+        />
+      )}
+
+      {testBrandRow && (
+        <ActionDialog
+          open
+          onClose={() => setTestBrandRow(null)}
+          busy={setTest.isPending}
+          error={setTest.error ? describeError(setTest.error) : null}
+          title={testBrandRow.is_test ? `Make ${testBrandRow.name} a live brand?` : `Make ${testBrandRow.name} a test brand?`}
+          description={testBrandRow.is_test
+            ? "KBB will see all of this brand's orders again, including the ones placed while it was a test brand. Cancel leftover test orders first."
+            : "KBB stops seeing this brand and every one of its orders, past and future. V360 staff do KBB's steps for these orders (confirm, receive in Bangladesh, deliver). Test orders go in a shipment of their own and stay out of KBB's account."}
+          danger={testBrandRow.is_test}
+          confirmLabel={testBrandRow.is_test ? "Make live" : "Make test brand"}
+          onConfirm={() => setTest.mutate({ id: testBrandRow.id, isTest: !testBrandRow.is_test }, { onSuccess: () => setTestBrandRow(null) })}
         />
       )}
 
