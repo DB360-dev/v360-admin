@@ -217,6 +217,8 @@ export interface TeamMember {
 
 export interface BrandRow extends Organization {
   created_at: string; contact_phone: string | null; reviewed_at: string | null;
+  /** Test brand: its orders are hidden from KBB and V360 does KBB's steps (migration 059). */
+  is_test: boolean;
   shopify_connections: { shop_domain: string; status: string; last_synced_at: string | null }[] | { shop_domain: string; status: string; last_synced_at: string | null } | null;
 }
 

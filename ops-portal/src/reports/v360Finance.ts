@@ -745,7 +745,7 @@ const PRE_CONFIRM = new Set<OrderStatus>(["new", "confirmation_pending", "custom
 
 async function loadBrands(): Promise<BrandRow[]> {
   return fetchAll<BrandRow>((from, to) => supabase.from("organizations")
-    .select("id, name, type, slug, is_active, approval_status, review_note, created_at, contact_phone, reviewed_at, shopify_connections(shop_domain, status, last_synced_at)")
+    .select("id, name, type, slug, is_active, approval_status, review_note, created_at, contact_phone, reviewed_at, is_test, shopify_connections(shop_domain, status, last_synced_at)")
     .eq("type", "brand").order("created_at").order("id").range(from, to));
 }
 const connOf = (b: BrandRow) => (Array.isArray(b.shopify_connections) ? b.shopify_connections[0] : b.shopify_connections) ?? null;

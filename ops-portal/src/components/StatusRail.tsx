@@ -49,7 +49,7 @@ export function StatusRail({ track, status, events }: { track: TrackStep[]; stat
                   done ? "border-primary bg-primary text-primary-fg"
                     : here ? "border-primary bg-surface text-primary ring-4 ring-primary/15"
                     : "border-line bg-surface text-faint"}`}>
-                {done ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
+                {done || here ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
               </span>
               <span className={`mt-2 text-center text-[12.5px] leading-tight ${here ? "font-semibold text-ink" : done ? "text-ink/80" : "text-faint"}`}>
                 {step.label}
@@ -67,7 +67,7 @@ export function StatusRail({ track, status, events }: { track: TrackStep[]; stat
                 STATUS[status].group === "problem"
                   ? "border-g-problem bg-g-problem-bg text-g-problem ring-g-problem/15"
                   : "border-primary bg-surface text-primary ring-primary/15"}`}>
-              {track.length + 1}
+              {STATUS[status].group === "problem" ? track.length + 1 : <Check className="h-3 w-3" strokeWidth={3} />}
             </span>
             <span className="mt-2 text-center text-[12.5px] font-semibold leading-tight text-ink">{STATUS[status].label}</span>
             {reachedAt.get(status) && <span className="mt-0.5 text-[11px] text-faint">{fmtDate(reachedAt.get(status)!)}</span>}

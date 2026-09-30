@@ -149,7 +149,7 @@ export function useBrands() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("organizations")
-        .select("id, name, type, slug, is_active, approval_status, review_note, created_at, contact_phone, reviewed_at, shopify_connections(shop_domain, status, last_synced_at)")
+        .select("id, name, type, slug, is_active, approval_status, review_note, created_at, contact_phone, reviewed_at, is_test, shopify_connections(shop_domain, status, last_synced_at)")
         .eq("type", "brand").order("created_at", { ascending: false });
       if (error) throw error;
       return (data ?? []) as unknown as BrandRow[];
@@ -321,6 +321,21 @@ export function useRoles() {
       const counts = new Map<string, number>();
       for (const m of members.data ?? []) counts.set(m.role_id as string, (counts.get(m.role_id as string) ?? 0) + 1);
       return ((roles.data ?? []) as Omit<RoleRow, "member_count">[]).map((r) => ({ ...r, member_count: counts.get(r.id) ?? 0 }));
+    },
+  });
+}
+
+/** Newest rate for one currency pair (e.g. 1 PKR = N BDT), for converted amounts on the KBB order page. */
+export function useLatestFxRate(base: string, quote: string) {
+  return useQuery({
+    queryKey: k("fx", base, quote),
+    staleTime: 5 * 60_000,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("fx_rates").select("*").eq("base", base).eq("quote", quote)
+        .order("rate_date", { ascending: false }).limit(1).maybeSingle();
+      if (error) throw error;
+      return data as FxRate | null;
     },
   });
 }
@@ -932,6 +947,11 @@ export interface ApproveBrandParams {
   freightBdtPerKg?: number;
   invoiceCompanyName?: string;
 }
+
+/** Mark a brand as test (its orders are hidden from KBB) or back to live. */
+export const useSetBrandTest = (o?: ActionOptions) => useOpsAction(
+  (v: { id: string; isTest: boolean }) => rpc("set_brand_test", { p_brand_id: v.id, p_is_test: v.isTest }),
+  (_r, v) => (v.isTest ? "Marked as a test brand: KBB no longer sees its orders" : "Brand is live again: KBB sees its orders"), o);
 
 export const useApproveBrand = (o?: ActionOptions) => useOpsAction(
   (v: ApproveBrandParams) =>

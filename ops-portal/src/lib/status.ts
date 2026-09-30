@@ -45,7 +45,8 @@ export const GROUP_CLASSES: Record<StatusGroup, { text: string; bg: string; dot:
   closed:  { text: "text-g-closed",  bg: "bg-g-closed-bg",  dot: "bg-g-closed" },
 };
 
-export const CONFIRM_QUEUE: OrderStatus[] = ["new", "confirmation_pending", "customer_unreachable"];
+/** KBB's call list. brand_confirmed is here so an order the brand (re)confirmed comes back to be called. */
+export const CONFIRM_QUEUE: OrderStatus[] = ["new", "brand_confirmed", "confirmation_pending", "customer_unreachable"];
 export const DELIVERY_QUEUE: OrderStatus[] = ["received_by_partner", "preparing_for_delivery", "out_for_delivery", "delivery_failed"];
 export const RETURNED_DISCREPANCY_LABEL = "Returned due to discrepancy";
 

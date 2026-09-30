@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, MessageCircle, MessageSquare, Phone } from "lucide-react";
-import { useShopifyFulfill, useBrandMoneySettings, useInvoicesList, useMoneySettings, useOrder, useOrderEvents, useOrderInternalNote, useOrderMessages, useSaveOrderInternalNote, useShipments } from "@/hooks/useData";
+import { useShopifyFulfill, useBrandMoneySettings, useInvoicesList, useLatestFxRate, useMoneySettings, useOrder, useOrderEvents, useOrderInternalNote, useOrderMessages, useSaveOrderInternalNote, useShipments } from "@/hooks/useData";
 import { INBOUND_STATUS, PARTNER_STATUS_TRACK, RETURN_DISPOSITION, SHIPMENT_STATUS, STATUS, V360_STATUS_TRACK } from "@/lib/status";
 import { useOps } from "@/context/OpsContext";
 import { useCourierParcels } from "@/hooks/useCourier";
@@ -200,6 +200,51 @@ function ShopifyFulfillment({ order, canRetry }: { order: OpsOrderDetail; canRet
   return <div><span className="text-muted">Not fulfilled yet</span> {retry}</div>;
 }
 
+/** What KBB sees instead of the admin Money card: the same Payment card brands get, with each amount in both currencies. */
+function KbbPayment({ order: o }: { order: OpsOrderDetail }) {
+  const fxQ = useLatestFxRate("PKR", "BDT");
+  const fxRate = fxQ.data?.rate ?? null;
+  const fxDate = fxQ.data?.rate_date ?? null;
+  const cod = o.cod_currency ?? "BDT";
+  const approx = (amount: number | null | undefined, currency: string | null | undefined): string | null => {
+    if (!fxRate || !amount) return null;
+    const c = (currency ?? "PKR").toUpperCase();
+    if (c === "PKR") return fmtMoney(amount * fxRate, "BDT");
+    if (c === "BDT") return fmtMoney(amount / fxRate, "PKR");
+    return null;
+  };
+  const withApprox = (key: string, amount: number | null, currency: string | null, strong = false) => (
+    <span key={key} className="inline-flex flex-wrap items-baseline gap-2">
+      {strong ? <strong>{fmtMoney(amount, currency)}</strong> : fmtMoney(amount, currency)}
+      {approx(amount, currency) && <span className="text-[12.5px] text-muted">≈ {approx(amount, currency)}</span>}
+    </span>
+  );
+  return (
+    <Section title="Payment">
+      <Facts rows={[
+        ["Subtotal", withApprox("sub", o.subtotal, o.currency)],
+        ["Discount", o.discount_total ? `−${fmtMoney(o.discount_total, o.currency)}` : "—"],
+        ["Shipping", fmtMoney(o.shipping_total, o.currency)],
+        ["Order total", withApprox("t", o.order_total, o.currency, true)],
+        ["Cash to collect", withApprox("cod", o.cod_amount_expected, cod)],
+        ["Cash collected", o.cod_amount_collected !== null
+          ? <span key="c" className={o.cod_amount_expected !== null && o.cod_amount_collected < o.cod_amount_expected ? "font-medium text-g-problem" : "font-medium"}>{fmtMoney(o.cod_amount_collected, cod)}</span>
+          : "Not yet"],
+      ]} />
+      {fxRate && fxDate && (
+        <p className="mt-3 text-[11.5px] text-faint">
+          Converted figures use the rate 1 PKR = {fxRate} BDT (set {fxDate} by the admin team).
+        </p>
+      )}
+      {!fxRate && !fxQ.isLoading && (
+        <p className="mt-3 text-[11.5px] text-faint">
+          No PKR → BDT rate set yet — converted amounts aren't shown.
+        </p>
+      )}
+    </Section>
+  );
+}
+
 export function OrderDetail() {
   const { id = "" } = useParams();
   const q = useOrder(id);
@@ -281,6 +326,7 @@ export function OrderDetail() {
                 </div>
               </Section>
             )}
+            {isKbb && !hideMoney && <KbbPayment order={o} />}
             <Section title="Confirmation (KBB)">
               <Facts rows={[["Confirmed", fmtDateTime(o.confirmed_at)], ["Call attempts", o.confirmation_attempts || "—"]]} />
             </Section>
