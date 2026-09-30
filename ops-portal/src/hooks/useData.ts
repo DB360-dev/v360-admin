@@ -618,9 +618,30 @@ export const useUpdateOrderDetails = (o?: ActionOptions) => useOpsAction(
   (v: { id: string; changes: Record<string, string> }) => rpc("brand_update_order", { p_order_id: v.id, p_changes: v.changes }),
   "Order details saved", o);
 
+/** Saved per-unit weights (kg) for an order's item lines, keyed by item id — pre-fills the receiving dialog. */
+export function useRememberedWeights(orderId: string | null) {
+  return useQuery({
+    queryKey: k("remembered-weights", orderId),
+    enabled: !!orderId,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      const rows = await rpc<{ item_id: string; weight_kg: number }[]>("remembered_item_weights", { p_order_id: orderId });
+      return Object.fromEntries((rows ?? []).map((r) => [r.item_id, Number(r.weight_kg)])) as Record<string, number>;
+    },
+  });
+}
+
 export const useReceiveOrder = (o?: ActionOptions) => useOpsAction(
-  (v: { id: string; weight: number; items: { item_id: string; received_quantity: number }[] | null; note?: string }) =>
-    rpc<OrderStatus>("receive_order", { p_order_id: v.id, p_order_weight_kg: v.weight, p_items: v.items, p_note: trimOrNull(v.note) }),
+  (v: {
+    id: string; weight: number; items: { item_id: string; received_quantity: number }[] | null; note?: string;
+    /** One unit's weight per item line; remembered per product for the next order. */
+    itemWeights: { item_id: string; weight_kg: number }[];
+  }) =>
+    rpc<OrderStatus>("receive_order_weighed", {
+      p_order_id: v.id, p_order_weight_kg: v.weight, p_items: v.items, p_note: trimOrNull(v.note), p_item_weights: v.itemWeights,
+    }),
   (r) => (r === "ready_for_shipment" ? "Received in full: ready for shipment" : "Recorded as a mismatch: items missing"), o);
 
 export const useCreateShipment = (o?: ActionOptions) => useOpsAction(
