@@ -34,6 +34,8 @@ export interface OrderQuery {
   page?: number; oldestFirst?: boolean; shipmentId?: string; limit?: number;
   /** When set, "returned" orders only match if returned_due_to_discrepancy equals this. */
   returnedDiscrepancy?: boolean;
+  /** When set, "confirmed" orders only match if the brand has (true) or hasn't (false) confirmed them. */
+  brandConfirmed?: boolean;
 }
 const cleanSearch = (s: string) => s.replace(/[,()*%\\:"']/g, " ").trim();
 
@@ -43,11 +45,23 @@ export function useOrderList(f: OrderQuery) {
     placeholderData: keepPreviousData,
     queryFn: async () => {
       let q = supabase.from("order_overview").select("*", { count: "exact" });
-      if (f.statuses && f.returnedDiscrepancy !== undefined && f.statuses.includes("returned")) {
-        const others = f.statuses.filter((s) => s !== "returned");
-        const returned = `and(status.eq.returned,returned_due_to_discrepancy.is.${f.returnedDiscrepancy})`;
-        q = q.or(others.length ? `status.in.(${others.join(",")}),${returned}` : returned);
-      } else if (f.statuses) q = q.in("status", f.statuses);
+      if (f.statuses) {
+        // Statuses split by a second column get their own and(...) clause.
+        const special: string[] = [];
+        if (f.returnedDiscrepancy !== undefined && f.statuses.includes("returned")) {
+          special.push(`and(status.eq.returned,returned_due_to_discrepancy.is.${f.returnedDiscrepancy})`);
+        }
+        if (f.brandConfirmed !== undefined && f.statuses.includes("confirmed")) {
+          special.push(`and(status.eq.confirmed,brand_confirmed_at.${f.brandConfirmed ? "not.is" : "is"}.null)`);
+        }
+        const split = new Set<OrderStatus>([
+          ...(f.returnedDiscrepancy !== undefined ? ["returned" as const] : []),
+          ...(f.brandConfirmed !== undefined ? ["confirmed" as const] : []),
+        ]);
+        const plain = f.statuses.filter((s) => !split.has(s));
+        if (special.length === 0) q = q.in("status", f.statuses);
+        else q = q.or([...(plain.length ? [`status.in.(${plain.join(",")})`] : []), ...special].join(","));
+      }
       if (f.brandId) q = q.eq("brand_id", f.brandId);
       if (f.shipmentId) q = q.eq("shipment_id", f.shipmentId);
       const s = cleanSearch(f.search ?? "");
@@ -1052,6 +1066,16 @@ export const useAddUser = (o?: ActionOptions) => useOpsAction(
   async (v: { email: string; full_name: string; organization_id: string; role: string; role_id: string | null; password: string }) => {
     const { data, error } = await supabase.functions.invoke("manage-user", {
       body: { ...v, role_id: v.role_id || undefined, password: v.password || undefined },
+    });
+    if (error) throw new Error(await describeFunctionError(error));
+    return data as { message: string };
+  }, (r) => r.message, o);
+
+/** Set another person's password (manage-user checks the caller manages all their organizations). */
+export const useSetUserPassword = (o?: ActionOptions) => useOpsAction(
+  async (v: { userId: string; password: string }) => {
+    const { data, error } = await supabase.functions.invoke("manage-user", {
+      body: { action: "set_password", user_id: v.userId, password: v.password },
     });
     if (error) throw new Error(await describeFunctionError(error));
     return data as { message: string };
