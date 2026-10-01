@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
 import { CheckNotesModal } from "@/components/CheckNotesModal";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { StickyScrollX } from "@/components/ui/StickyScrollX";
 import { BulkOrderActions, useBulkSelectable } from "@/components/BulkOrderActions";
 
 function useDebounced<T>(value: T, ms = 300) {
@@ -90,6 +91,8 @@ export function brandStatus(o: OrderOverview): { label: string; group: StatusGro
     case "brand_preparing":
       return { label: "Brand preparing", group: "brand" };
     case "confirmed":
+      // KBB can confirm before the brand does; only say "Brand confirmed" when the brand actually did.
+      return o.brand_confirmed_at ? { label: "Brand confirmed", group: "brand" } : { label: "Not confirmed by brand", group: "brand" };
     case "dispatched_to_hub":
     case "received_at_hub":
     case "ready_for_shipment":
@@ -133,11 +136,14 @@ export function masterStatus(o: Pick<OrderOverview, "status" | "returned_due_to_
   return { label: s?.label ?? o.status, group: s?.group ?? "closed" };
 }
 
-/** Every (status, returned-due-to-discrepancy) combination an order can be in. */
-type OrderState = { status: OrderStatus; discrepancy: boolean };
+/** Every (status, returned-due-to-discrepancy, brand-confirmed) combination that changes a column label. */
+type OrderState = { status: OrderStatus; discrepancy: boolean; brandConfirmed: boolean };
 const ALL_STATES: OrderState[] = (Object.keys(STATUS) as OrderStatus[]).flatMap((status): OrderState[] =>
-  status === "returned" ? [{ status, discrepancy: false }, { status, discrepancy: true }] : [{ status, discrepancy: false }]);
-const asOrder = (st: OrderState) => ({ status: st.status, returned_due_to_discrepancy: st.discrepancy }) as OrderOverview;
+  status === "returned" ? [{ status, discrepancy: false, brandConfirmed: false }, { status, discrepancy: true, brandConfirmed: false }]
+  : status === "confirmed" ? [{ status, discrepancy: false, brandConfirmed: false }, { status, discrepancy: false, brandConfirmed: true }]
+  : [{ status, discrepancy: false, brandConfirmed: false }]);
+const asOrder = (st: OrderState) =>
+  ({ status: st.status, returned_due_to_discrepancy: st.discrepancy, brand_confirmed_at: st.brandConfirmed ? "x" : null }) as OrderOverview;
 
 /** The status columns that can be filtered, keyed by URL param. */
 const STATUS_FILTERS = [
@@ -148,12 +154,14 @@ const STATUS_FILTERS = [
 
 /** Turn the tab's statuses plus the picked column labels into an order_overview filter. */
 function statusQuery(base: OrderStatus[] | null, picks: { fn: (o: OrderOverview) => { label: string }; label: string }[]) {
-  if (picks.length === 0) return { statuses: base, returnedDiscrepancy: undefined };
+  if (picks.length === 0) return { statuses: base };
   const states = ALL_STATES.filter((st) => (!base || base.includes(st.status)) && picks.every((p) => p.fn(asOrder(st)).label === p.label));
   const returned = states.filter((st) => st.status === "returned");
+  const confirmed = states.filter((st) => st.status === "confirmed");
   return {
     statuses: [...new Set(states.map((st) => st.status))],
     returnedDiscrepancy: returned.length === 1 ? returned[0].discrepancy : undefined,
+    brandConfirmed: confirmed.length === 1 ? confirmed[0].brandConfirmed : undefined,
   };
 }
 
@@ -255,8 +263,8 @@ export function Orders() {
         </div>
       )}
 
-      <div className="panel overflow-hidden">
-        <div className="overflow-x-auto">
+      <div className="panel overflow-clip">
+        <StickyScrollX>
           <table className="w-full min-w-[1100px] text-[13.5px]">
             <thead className="table-head">
               <tr>
@@ -312,7 +320,7 @@ export function Orders() {
               </tbody>
             )}
           </table>
-        </div>
+        </StickyScrollX>
         {q.isError && <ErrorState error={q.error} onRetry={() => q.refetch()} title="Orders didn't load" />}
         {!q.isLoading && !q.isError && rows.length === 0 && (
           <EmptyState icon={<Inbox className="h-6 w-6" />} title={filters ? "No orders match these filters" : "No orders here"} />

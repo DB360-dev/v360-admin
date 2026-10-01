@@ -12,6 +12,11 @@
 //   - Without password: Supabase emails an invite link (needs working email / custom SMTP).
 //   - If the email already has an account, it just adds the new membership.
 //
+// Set another user's password: { action: "set_password", user_id, password }
+//   Allowed only if the caller manages EVERY organization that user belongs to, so a
+//   brand owner or KBB admin can't take over an account that also has other access.
+//   People change their own password in the portal (supabase.auth.updateUser).
+//
 // Secrets: OPS_PORTAL_URL, BRAND_PORTAL_URL (where invite links land), ALLOWED_ORIGINS.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -33,8 +38,10 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
   if (req.method !== "POST") return json(req, { error: "Method not allowed" }, 405);
 
-  let body: { email?: string; full_name?: string; organization_id?: string; role?: string; role_id?: string; password?: string };
+  let body: { action?: string; user_id?: string; email?: string; full_name?: string; organization_id?: string; role?: string; role_id?: string; password?: string };
   try { body = await req.json(); } catch { return json(req, { error: "Invalid request" }, 400); }
+
+  if (body.action === "set_password") return setPassword(req, body.user_id ?? "", body.password ?? "");
 
   const email = (body.email ?? "").trim().toLowerCase();
   const fullName = (body.full_name ?? "").trim();
@@ -142,3 +149,30 @@ Deno.serve(async (req) => {
         : `Invite sent to ${email}`,
   });
 });
+
+async function setPassword(req: Request, userId: string, password: string) {
+  if (!userId) return json(req, { error: "Choose a user" }, 400);
+  if (password.length < 8) return json(req, { error: "Password must be at least 8 characters" }, 400);
+
+  const asUser = createClient(SUPABASE_URL, ANON_KEY, {
+    global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
+  });
+  const { data: me, error: meErr } = await asUser.auth.getUser();
+  if (meErr || !me.user) return json(req, { error: "Your session has expired. Please sign in again." }, 401);
+  if (me.user.id === userId) return json(req, { error: "Change your own password from the menu instead" }, 400);
+
+  const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+  const { data: mems } = await admin.from("memberships").select("organization_id").eq("user_id", userId);
+  const orgIds = [...new Set((mems ?? []).map((m) => m.organization_id as string))];
+  if (orgIds.length === 0) return json(req, { error: "You can't change this person's password" }, 403);
+  for (const orgId of orgIds) {
+    const { data: canManage } = await asUser.rpc("can_manage_org", { p_org_id: orgId });
+    if (!canManage) {
+      return json(req, { error: "This person also has access somewhere you don't manage, so only a V360 admin can change their password" }, 403);
+    }
+  }
+
+  const { error } = await admin.auth.admin.updateUserById(userId, { password });
+  if (error) return json(req, { error: error.message }, 400);
+  return json(req, { ok: true, message: "Password changed. Share it with them privately." });
+}

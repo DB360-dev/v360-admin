@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { UserPlus, Users } from "lucide-react";
+import { KeyRound, UserPlus, Users } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useOps } from "@/context/OpsContext";
-import { membershipRoleFields, useAddUser, useOrganizations, useRemoveMembership, useRoles, useTeam, useUpdateMembership } from "@/hooks/useData";
+import { membershipRoleFields, useAddUser, useOrganizations, useRemoveMembership, useRoles, useSetUserPassword, useTeam, useUpdateMembership } from "@/hooks/useData";
 import { describeError } from "@/lib/errors";
 import { fmtDate } from "@/lib/format";
 import { ROLE_LABEL } from "@/lib/status";
@@ -109,9 +109,28 @@ function AddUserDialog({ open, onClose }: { open: boolean; onClose: () => void }
         </fieldset>
         {mode === "password" ? (
           <div className="sm:col-span-2"><TextField label="Temporary password" type="text" autoComplete="off" value={v.password} onChange={(e) => setV({ ...v, password: e.target.value })}
-            error={errs.password} hint="Share it with them privately. They can change it in their settings." /></div>
+            error={errs.password} hint="Share it with them privately. They can change it from the menu after signing in." /></div>
         ) : <p className="text-[13px] text-muted sm:col-span-2">Needs working email (custom SMTP) in Supabase. The invite link lets them choose a password.</p>}
       </div>
+    </Dialog>
+  );
+}
+
+function SetPasswordDialog({ member, onClose }: { member: TeamMember; onClose: () => void }) {
+  const set = useSetUserPassword({ inlineErrors: true });
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState<string>();
+  const submit = () => {
+    if (pw.length < 8) { setErr("At least 8 characters"); return; }
+    setErr(undefined);
+    set.mutate({ userId: member.user_id, password: pw }, { onSuccess: onClose });
+  };
+  return (
+    <Dialog open onClose={onClose} onSubmit={submit} busy={set.isPending} error={set.error ? describeError(set.error) : null} width="sm"
+      title={`Set a new password for ${member.email}`} description="Their old password stops working straight away. They stay signed in on devices where they already are."
+      footer={<><Button onClick={onClose} disabled={set.isPending}>Cancel</Button><Button type="submit" variant="primary" loading={set.isPending}>Set password</Button></>}>
+      <TextField label="New password" type="text" autoComplete="off" value={pw} onChange={(e) => setPw(e.target.value)} error={err}
+        hint="Share it with them privately. They can change it from the menu after signing in." autoFocus />
     </Dialog>
   );
 }
@@ -127,6 +146,7 @@ export function Team() {
   const remove = useRemoveMembership({ inlineErrors: true });
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<TeamMember | null>(null);
+  const [settingPw, setSettingPw] = useState<TeamMember | null>(null);
   const [type, setType] = useState<"all" | "v360" | "partner" | "brand">("all");
   const rows = useMemo(() => (q.data ?? []).filter((m) => (isAdmin || m.organization_id === orgId) && (type === "all" || m.organization_type === type)),
     [q.data, type, isAdmin, orgId]);
@@ -142,7 +162,7 @@ export function Team() {
       </div>}
       <div className="panel overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-[13.5px]">
+          <table className="w-full min-w-[860px] text-[13.5px]">
             <thead className="table-head"><tr><th>Name</th><th>Email</th><th>Organization</th><th>Role</th><th>Added</th><th /></tr></thead>
             {q.isLoading ? <SkeletonRows cols={6} rows={5} /> : (
               <tbody className="table-body">
@@ -163,7 +183,10 @@ export function Team() {
                         ) : roleLabel(m, roles)}
                       </td>
                       <td className="text-muted">{fmtDate(m.created_at)}</td>
-                      <td className="text-right">{manages(m) && !self && <Button size="sm" variant="danger-ghost" onClick={() => { remove.reset(); setRemoving(m); }}>Remove</Button>}</td>
+                      <td className="whitespace-nowrap text-right">{manages(m) && !self && <>
+                        <Button size="sm" variant="ghost" onClick={() => setSettingPw(m)}><KeyRound className="h-3.5 w-3.5" /> Set password</Button>
+                        <Button size="sm" variant="danger-ghost" onClick={() => { remove.reset(); setRemoving(m); }}>Remove</Button>
+                      </>}</td>
                     </tr>
                   );
                 })}
@@ -176,6 +199,7 @@ export function Team() {
 
       </div>
       <AddUserDialog open={adding} onClose={() => setAdding(false)} />
+      {settingPw && <SetPasswordDialog member={settingPw} onClose={() => setSettingPw(null)} />}
       {removing && (
         <ActionDialog open onClose={() => setRemoving(null)} busy={remove.isPending} error={remove.error ? describeError(remove.error) : null} danger
           title={`Remove ${removing.email} from ${removing.organization_name}?`} description="They lose this access immediately. Their login still exists and can be given access again later."

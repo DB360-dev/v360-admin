@@ -161,6 +161,8 @@ export interface OrderOverview {
   shipment_id: string | null; inbound_batch_id: string | null;
   /** Auto-returned because KBB received less than was dispatched. */
   returned_due_to_discrepancy?: boolean;
+  /** When the brand confirmed the order (null if it never did, e.g. KBB confirmed straight from New). */
+  brand_confirmed_at?: string | null;
   shipment_invoice_payment_status?: InvoicePaymentStatus | null;
   invoice_payment_status?: InvoicePaymentStatus | null;
   is_settled?: boolean;

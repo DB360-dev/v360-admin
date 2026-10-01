@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, AlertTriangle, Banknote, Boxes, Building2, Coins, Gauge, Inbox, LogOut, Menu, Monitor, Moon, PackageCheck, PhoneCall, ShieldCheck, FileSpreadsheet, Receipt, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
+  Activity, AlertTriangle, Banknote, Boxes, Building2, Coins, Gauge, Inbox, KeyRound, LogOut, Menu, Monitor, Moon, PackageCheck, PhoneCall, ShieldCheck, FileSpreadsheet, Receipt, Ship, Sun, Truck, Users, Webhook, WifiOff, X,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
@@ -13,6 +13,7 @@ import { useOnline } from "@/hooks/useOnline";
 import { CONFIRM_QUEUE, DELIVERY_QUEUE } from "@/lib/status";
 import type { Perm } from "@/lib/permissions";
 import { reportsFor } from "@/reports";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { NotificationBanner } from "./NotificationBanner";
 import { NotificationToggle, NotificationPanel } from "./NotificationArea";
@@ -66,6 +67,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const c = useStatusCounts().data ?? {};
   const sum = (ss: string[]) => ss.reduce((n, s) => n + (c[s as keyof typeof c] ?? 0), 0);
   const discrepancyCount = useBdDiscrepancyCount().data ?? 0;
+  const [changingPw, setChangingPw] = useState(false);
   const badges: Record<Badge, number> = {
     confirm: sum(CONFIRM_QUEUE),
     deliver: sum(DELIVERY_QUEUE),
@@ -105,11 +107,15 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <ThemeSwitch />
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1 truncate text-[13px] text-muted" title={user?.email}>{user?.email}</div>
+          <button onClick={() => setChangingPw(true)} className="rounded p-1.5 text-muted hover:bg-sunken hover:text-ink" title="Change password">
+            <KeyRound className="h-4 w-4" /><span className="sr-only">Change password</span>
+          </button>
           <button onClick={() => void signOut()} className="rounded p-1.5 text-muted hover:bg-sunken hover:text-ink" title="Sign out">
             <LogOut className="h-4 w-4" /><span className="sr-only">Sign out</span>
           </button>
         </div>
       </div>
+      {changingPw && <ChangePasswordDialog onClose={() => setChangingPw(false)} />}
     </div>
   );
 }
