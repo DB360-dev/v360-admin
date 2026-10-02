@@ -45,9 +45,10 @@ export function fulfilmentStatus(o: OrderOverview): { label: string; group: Stat
     case "customer_unreachable":
     case "needs_amendment":
     case "brand_confirmed":
-    case "brand_preparing":
       return { label: "New", group: "kbb" };
+    // The brand can only mark "ready to ship" after fulfilment confirmed the order.
     case "confirmed":
+    case "brand_preparing":
     case "dispatched_to_hub":
     case "received_at_hub":
     case "ready_for_shipment":
@@ -91,8 +92,7 @@ export function brandStatus(o: OrderOverview): { label: string; group: StatusGro
     case "brand_preparing":
       return { label: "Brand preparing", group: "brand" };
     case "confirmed":
-      // KBB can confirm before the brand does; only say "Brand confirmed" when the brand actually did.
-      return o.brand_confirmed_at ? { label: "Brand confirmed", group: "brand" } : { label: "Not confirmed by brand", group: "brand" };
+      return { label: "Brand confirmed", group: "brand" };
     case "dispatched_to_hub":
     case "received_at_hub":
     case "ready_for_shipment":
@@ -119,7 +119,7 @@ export function brandStatus(o: OrderOverview): { label: string; group: StatusGro
   }
 }
 
-export function masterStatus(o: Pick<OrderOverview, "status" | "returned_due_to_discrepancy">): { label: string; group: StatusGroup } {
+export function masterStatus(o: Pick<OrderOverview, "status" | "returned_due_to_discrepancy" | "brand_confirmed_at">): { label: string; group: StatusGroup } {
   if (o.status === "returned" && o.returned_due_to_discrepancy) {
     return { label: RETURNED_DISCREPANCY_LABEL, group: "problem" };
   }
@@ -130,7 +130,8 @@ export function masterStatus(o: Pick<OrderOverview, "status" | "returned_due_to_
     return { label: "Brand confirmed", group: "brand" };
   }
   if (o.status === "confirmed") {
-    return { label: "Order confirmed", group: "kbb" };
+    // Confirmed by KBB only (the brand never confirmed): still shown as at the brand stage.
+    return o.brand_confirmed_at ? { label: "Order confirmed", group: "kbb" } : { label: "Brand confirmed", group: "brand" };
   }
   const s = STATUS[o.status];
   return { label: s?.label ?? o.status, group: s?.group ?? "closed" };

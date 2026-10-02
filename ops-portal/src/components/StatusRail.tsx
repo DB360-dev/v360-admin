@@ -8,7 +8,8 @@ import type { OrderEvent, OrderStatus } from "@/lib/types";
  * organisation — every step is visible, with done steps filled in, the current
  * step highlighted and the remainder shown as upcoming. When the order sits in
  * a status that isn't one of the track steps (e.g. hold, hub issue, in transit)
- * an extra "current" chip is appended so the real state is never hidden.
+ * an extra "current" chip is inserted after the furthest step reached, so the
+ * real state is never hidden and sits where it belongs in the journey.
  */
 export function StatusRail({ track, status, events }: { track: TrackStep[]; status: OrderStatus; events: OrderEvent[] }) {
   const reachedAt = new Map<OrderStatus, string>();
@@ -33,15 +34,36 @@ export function StatusRail({ track, status, events }: { track: TrackStep[]; stat
   const currentLabel = inTrack ? track[cur].label : STATUS[status].label;
   const current = inTrack ? status : null;
 
+  // An off-track status is shown inline, right after the furthest step reached
+  // (not tacked on after "Delivered"), and the steps that follow renumber around it.
+  const extraAt = inTrack ? -1 : cur + 1;
+  const num = (i: number) => (extraAt >= 0 && i >= extraAt ? i + 2 : i + 1);
+  const problem = STATUS[status].group === "problem";
+
+  const extraChip = (
+    <li key="__current" className="relative flex min-w-[120px] flex-col items-center px-2.5" aria-current="step">
+      <span aria-hidden className="absolute right-1/2 top-[11px] h-[2px] w-full bg-primary" />
+      <span aria-hidden
+        className={`relative z-10 grid h-6 w-6 place-items-center rounded-full border-2 text-[10px] font-semibold ring-4 ${
+          problem
+            ? "border-g-problem bg-g-problem-bg text-g-problem ring-g-problem/15"
+            : "border-primary bg-surface text-primary ring-primary/15"}`}>
+        {problem ? extraAt + 1 : <Check className="h-3 w-3" strokeWidth={3} />}
+      </span>
+      <span className="mt-2 text-center text-[12.5px] font-semibold leading-tight text-ink">{STATUS[status].label}</span>
+      {reachedAt.get(status) && <span className="mt-0.5 text-[11px] text-faint">{fmtDate(reachedAt.get(status)!)}</span>}
+    </li>
+  );
+
   return (
     <div>
       <ol className="flex items-start overflow-x-auto pb-1" aria-label="Status tracking">
-        {track.map((step, i) => {
+        {track.flatMap((step, i) => {
           const done = inTrack ? i < cur : i <= cur;
           const here = inTrack && i === cur;
-          return (
+          const item = (
             <li key={step.status} className="relative flex min-w-[104px] flex-col items-center px-2.5">
-              {i > 0 && (
+              {num(i) > 1 && (
                 <span aria-hidden className={`absolute right-1/2 top-[11px] h-[2px] w-full ${done ? "bg-primary" : "bg-line"}`} />
               )}
               <span aria-hidden
@@ -49,7 +71,7 @@ export function StatusRail({ track, status, events }: { track: TrackStep[]; stat
                   done ? "border-primary bg-primary text-primary-fg"
                     : here ? "border-primary bg-surface text-primary ring-4 ring-primary/15"
                     : "border-line bg-surface text-faint"}`}>
-                {done || here ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
+                {done || here ? <Check className="h-3 w-3" strokeWidth={3} /> : num(i)}
               </span>
               <span className={`mt-2 text-center text-[12.5px] leading-tight ${here ? "font-semibold text-ink" : done ? "text-ink/80" : "text-faint"}`}>
                 {step.label}
@@ -57,22 +79,8 @@ export function StatusRail({ track, status, events }: { track: TrackStep[]; stat
               {(here || done) && reachedAt.get(step.status) && <span className="mt-0.5 text-[11px] text-faint">{fmtDate(reachedAt.get(step.status)!)}</span>}
             </li>
           );
+          return i === cur && !inTrack ? [item, extraChip] : [item];
         })}
-
-        {!inTrack && (
-          <li className="relative flex min-w-[120px] flex-col items-center px-2.5" aria-current="step">
-            <span aria-hidden className="absolute right-1/2 top-[11px] h-[2px] w-full bg-primary" />
-            <span aria-hidden
-              className={`relative z-10 grid h-6 w-6 place-items-center rounded-full border-2 text-[10px] font-semibold ring-4 ${
-                STATUS[status].group === "problem"
-                  ? "border-g-problem bg-g-problem-bg text-g-problem ring-g-problem/15"
-                  : "border-primary bg-surface text-primary ring-primary/15"}`}>
-              {STATUS[status].group === "problem" ? track.length + 1 : <Check className="h-3 w-3" strokeWidth={3} />}
-            </span>
-            <span className="mt-2 text-center text-[12.5px] font-semibold leading-tight text-ink">{STATUS[status].label}</span>
-            {reachedAt.get(status) && <span className="mt-0.5 text-[11px] text-faint">{fmtDate(reachedAt.get(status)!)}</span>}
-          </li>
-        )}
       </ol>
       <p className="mt-3 text-center text-[13px] sm:hidden">
         <span className="font-semibold">{currentLabel}</span>
