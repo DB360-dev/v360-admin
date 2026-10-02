@@ -548,6 +548,28 @@ export function useShipmentCalculatedWeight(shipmentId: string | null) {
   });
 }
 
+/** Hub-receiving weight (kg) of every order ready for shipment, by order id. Orders not weighed are absent. */
+export function useReadyOrderWeights() {
+  return useQuery({
+    queryKey: k("orders", "ready-weights"),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("id, order_freight_weights(weight_kg)")
+        .eq("status", "ready_for_shipment");
+      if (error) throw error;
+      const weights = new Map<string, number>();
+      for (const o of data ?? []) {
+        const fw = Array.isArray(o.order_freight_weights)
+          ? o.order_freight_weights[0]
+          : (o.order_freight_weights as { weight_kg?: number } | null);
+        if (fw?.weight_kg != null) weights.set(o.id, Number(fw.weight_kg));
+      }
+      return weights;
+    },
+  });
+}
+
 // -------------------------------------------------------------- mutations
 
 export interface ActionOptions { inlineErrors?: boolean }

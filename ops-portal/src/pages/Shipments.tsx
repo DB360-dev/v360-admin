@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Boxes, Ship } from "lucide-react";
 import { useOps } from "@/context/OpsContext";
-import { useCreateShipmentWithOrders, useOrderList, useShipments } from "@/hooks/useData";
+import { useCreateShipmentWithOrders, useOrderList, useReadyOrderWeights, useShipments } from "@/hooks/useData";
 import { SHIPMENT_STATUS } from "@/lib/status";
 import { fmtDateTime, fmtMoney, plural } from "@/lib/format";
 import { describeError } from "@/lib/errors";
@@ -17,6 +17,7 @@ import { EmptyState, ErrorState, SkeletonRows } from "@/components/ui/States";
 function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
   const hideMoney = !useOps().can("orders.view_money");
   const q = useOrderList({ statuses: ["ready_for_shipment"], limit: 500, oldestFirst: true });
+  const weightsQ = useReadyOrderWeights();
   const create = useCreateShipmentWithOrders({ inlineErrors: true });
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [brand, setBrand] = useState("");
@@ -51,6 +52,22 @@ function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
   const shownOrders = useMemo(() => filteredGroups.flatMap((g) => g.orders), [filteredGroups]);
   const allSelected = shownOrders.length > 0 && shownOrders.every((r) => sel.has(r.id));
   const someSelected = shownOrders.some((r) => sel.has(r.id));
+
+  const weights = weightsQ.data;
+  /** Total kg of the given orders, and how many of them have no hub weight yet. */
+  const weighOrders = (orders: typeof rows) => {
+    let kg = 0, missing = 0;
+    for (const r of orders) {
+      const w = weights?.get(r.id);
+      if (w == null) missing++;
+      else kg += w;
+    }
+    return { kg: Math.round(kg * 100) / 100, missing };
+  };
+  const fmtKg = (kg: number) => `${kg.toLocaleString(undefined, { maximumFractionDigits: 2 })} kg`;
+  const selectedRows = useMemo(() => rows.filter((r) => sel.has(r.id)), [rows, sel]);
+  const selectedBrandCount = useMemo(() => new Set(selectedRows.map((r) => r.brand_name)).size, [selectedRows]);
+  const selectedWeight = weighOrders(selectedRows);
 
   const toggle = (id: string) =>
     setSel((s) => {
@@ -161,7 +178,9 @@ function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
             {filteredGroups.map((g) => {
               const brandAll = g.orders.every((r) => sel.has(r.id));
               const brandSome = g.orders.some((r) => sel.has(r.id));
-              const selCount = g.orders.filter((r) => sel.has(r.id)).length;
+              const selOrders = g.orders.filter((r) => sel.has(r.id));
+              const selCount = selOrders.length;
+              const selWeight = weighOrders(selOrders);
 
               return (
                 <div key={g.brandName} className="panel overflow-hidden">
@@ -185,7 +204,8 @@ function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
                     </div>
                     {selCount > 0 && (
                       <span className="rounded bg-primary-soft px-2 py-0.5 text-[12.5px] font-medium text-primary">
-                        {selCount} selected
+                        {selCount} selected · {fmtKg(selWeight.kg)}
+                        {selWeight.missing > 0 && <span className="font-normal"> ({selWeight.missing} not weighed)</span>}
                       </span>
                     )}
                   </div>
@@ -199,6 +219,9 @@ function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
                             {r.customer_name ? `${r.customer_name}, ${r.city}` : r.city}
                           </span>
                           <span className="w-24 text-right text-muted">{r.item_count} items</span>
+                          <span className="w-20 text-right text-muted">
+                            {weights?.has(r.id) ? fmtKg(weights.get(r.id)!) : "—"}
+                          </span>
                           {!hideMoney && (
                             <span className="w-32 text-right font-medium">
                               {fmtMoney(r.cod_amount_expected, r.cod_currency)}
@@ -215,6 +238,21 @@ function ShipmentBuilder({ onCreated }: { onCreated: (id: string) => void }) {
 
           {/* Action Footer */}
           <div className="panel flex flex-wrap items-end gap-3 bg-sunken/30 px-4 py-3">
+            <div className="w-full text-[13.5px]" aria-live="polite">
+              {sel.size === 0 ? (
+                <span className="text-muted">Select orders to see their total weight.</span>
+              ) : (
+                <>
+                  <span className="font-semibold text-ink">Selected: {fmtKg(selectedWeight.kg)}</span>
+                  <span className="text-muted">
+                    {" "}from {plural(sel.size, "order")} across {plural(selectedBrandCount, "brand")}
+                  </span>
+                  {selectedWeight.missing > 0 && (
+                    <span className="text-g-problem"> · {plural(selectedWeight.missing, "order")} not weighed yet</span>
+                  )}
+                </>
+              )}
+            </div>
             <div className="w-56">
               <TextField
                 label="Shipping partner"
